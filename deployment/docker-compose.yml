@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  lecture2pdf-service:
+    build: .
+    ports:
+      - "5002:5002"
+    volumes:
+      - ./generated_pdfs:/app/generated_pdfs
+      - ./videos:/app/videos
+      # SQLite DB not used; remove volume mapping
+    environment:
+      - LECTURE2PDF_PATH=/lecture2pdf
+      - FLASK_ENV=production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s 

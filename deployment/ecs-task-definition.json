@@ -1,0 +1,55 @@
+{
+  "family": "thakii-lecture2pdf-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::222156782817:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::222156782817:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "lecture2pdf-service",
+      "image": "222156782817.dkr.ecr.us-east-2.amazonaws.com/thakii-lecture2pdf-service:latest",
+      "portMappings": [
+        {
+          "containerPort": 5002,
+          "protocol": "tcp"
+        }
+      ],
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/thakii-lecture2pdf",
+          "awslogs-region": "us-east-2",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "environment": [
+        {
+          "name": "LECTURE2PDF_PATH",
+          "value": "/lecture2pdf"
+        },
+        {
+          "name": "FLASK_ENV",
+          "value": "production"
+        },
+        {
+          "name": "S3_BUCKET_NAME",
+          "value": "thakii-video-storage-1753883631"
+        },
+        {
+          "name": "AWS_DEFAULT_REGION",
+          "value": "us-east-2"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:5002/list || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ]
+} 

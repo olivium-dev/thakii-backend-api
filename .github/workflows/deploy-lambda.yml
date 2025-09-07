@@ -173,6 +173,9 @@ jobs:
     needs: [test, build]
     if: github.ref == 'refs/heads/develop'
     environment: staging
+    permissions:
+      id-token: write
+      contents: read
     
     steps:
     - name: 📥 Checkout code
@@ -260,6 +263,9 @@ jobs:
     needs: [test, build]
     if: github.ref == 'refs/heads/main'
     environment: production
+    permissions:
+      id-token: write
+      contents: read
     
     steps:
     - name: 📥 Checkout code
@@ -391,6 +397,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [deploy-production]
     if: github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
     
     steps:
     - name: 📥 Checkout code
@@ -472,6 +481,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [deploy-production, integration-test]
     if: always() && github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
     
     steps:
     - name: 🔐 Configure AWS credentials

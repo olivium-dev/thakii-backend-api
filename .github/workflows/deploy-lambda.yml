@@ -218,10 +218,11 @@ jobs:
             --description "Thakii Backend API - Staging Environment"
         fi
         
-        # Update environment variables
+        # Update environment variables  
+        echo '{"Variables":{"S3_BUCKET_NAME":"${{ secrets.S3_BUCKET_NAME }}","FLASK_ENV":"staging","ALLOWED_ORIGINS":"${{ secrets.ALLOWED_ORIGINS_STAGING }}","DISABLE_FIREBASE":"true"}}' > env-staging.json
         aws lambda update-function-configuration \
           --function-name "$STAGING_FUNCTION_NAME" \
-          --environment Variables="{\"S3_BUCKET_NAME\":\"${{ secrets.S3_BUCKET_NAME }}\",\"FLASK_ENV\":\"staging\",\"ALLOWED_ORIGINS\":\"${{ secrets.ALLOWED_ORIGINS_STAGING }}\",\"DISABLE_FIREBASE\":\"true\"}"
+          --environment file://env-staging.json
 
     - name: 🧪 Test staging deployment
       run: |
@@ -288,9 +289,10 @@ jobs:
           --zip-file fileb://deployment-package.zip
         
         # Update environment variables
+        echo '{"Variables":{"S3_BUCKET_NAME":"${{ secrets.S3_BUCKET_NAME }}","FLASK_ENV":"production","ALLOWED_ORIGINS":"${{ secrets.ALLOWED_ORIGINS_PRODUCTION }}","DISABLE_FIREBASE":"true"}}' > env.json
         aws lambda update-function-configuration \
           --function-name "$FUNCTION_NAME" \
-          --environment Variables="{\"S3_BUCKET_NAME\":\"${{ secrets.S3_BUCKET_NAME }}\",\"FLASK_ENV\":\"production\",\"ALLOWED_ORIGINS\":\"${{ secrets.ALLOWED_ORIGINS_PRODUCTION }}\",\"DISABLE_FIREBASE\":\"true\"}"
+          --environment file://env.json
         
         # Wait for update to complete
         aws lambda wait function-updated --function-name "$FUNCTION_NAME"

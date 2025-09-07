@@ -359,3 +359,6 @@ For support and questions:
 - [thakii-lambda-router](https://github.com/oudaykhaled/thakii-lambda-router) - Load balancer
 - [thakii-infrastructure](https://github.com/oudaykhaled/thakii-infrastructure) - Infrastructure as Code
 # GitHub Actions Pipeline with AWS Secrets ✅
+
+## AWS IAM Trust Policy Updated ✅
+GitHub Actions can now assume AWS IAM roles for deployment.

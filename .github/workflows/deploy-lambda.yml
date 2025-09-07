@@ -288,13 +288,16 @@ jobs:
           --function-name "$FUNCTION_NAME" \
           --zip-file fileb://deployment-package.zip
         
+        # Wait for code update to complete
+        aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+        
         # Update environment variables
         echo '{"Variables":{"S3_BUCKET_NAME":"${{ secrets.S3_BUCKET_NAME }}","FLASK_ENV":"production","ALLOWED_ORIGINS":"${{ secrets.ALLOWED_ORIGINS_PRODUCTION }}","DISABLE_FIREBASE":"true"}}' > env.json
         aws lambda update-function-configuration \
           --function-name "$FUNCTION_NAME" \
           --environment file://env.json
         
-        # Wait for update to complete
+        # Wait for environment update to complete
         aws lambda wait function-updated --function-name "$FUNCTION_NAME"
 
     - name: 📝 Create function alias

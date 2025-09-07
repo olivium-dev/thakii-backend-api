@@ -221,12 +221,7 @@ jobs:
         # Update environment variables
         aws lambda update-function-configuration \
           --function-name "$STAGING_FUNCTION_NAME" \
-          --environment Variables="{
-            S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }},
-            AWS_DEFAULT_REGION=${{ env.AWS_REGION }},
-            FLASK_ENV=staging,
-            ALLOWED_ORIGINS=${{ secrets.ALLOWED_ORIGINS_STAGING }}
-          }"
+          --environment Variables="{\"S3_BUCKET_NAME\":\"${{ secrets.S3_BUCKET_NAME }}\",\"FLASK_ENV\":\"staging\",\"ALLOWED_ORIGINS\":\"${{ secrets.ALLOWED_ORIGINS_STAGING }}\",\"DISABLE_FIREBASE\":\"true\"}"
 
     - name: 🧪 Test staging deployment
       run: |
@@ -295,13 +290,7 @@ jobs:
         # Update environment variables
         aws lambda update-function-configuration \
           --function-name "$FUNCTION_NAME" \
-          --environment Variables="{
-            S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }},
-            AWS_DEFAULT_REGION=${{ env.AWS_REGION }},
-            FLASK_ENV=production,
-            ALLOWED_ORIGINS=${{ secrets.ALLOWED_ORIGINS_PRODUCTION }},
-            FIREBASE_SERVICE_ACCOUNT_KEY=${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}
-          }"
+          --environment Variables="{\"S3_BUCKET_NAME\":\"${{ secrets.S3_BUCKET_NAME }}\",\"FLASK_ENV\":\"production\",\"ALLOWED_ORIGINS\":\"${{ secrets.ALLOWED_ORIGINS_PRODUCTION }}\",\"DISABLE_FIREBASE\":\"true\"}"
         
         # Wait for update to complete
         aws lambda wait function-updated --function-name "$FUNCTION_NAME"

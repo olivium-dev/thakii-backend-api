@@ -1,0 +1,433 @@
+name: Test Pull Requests
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    types: [opened, synchronize, reopened]
+
+env:
+  PYTHON_VERSION: '3.10'
+
+jobs:
+  # Job 1: Code Quality Checks
+  code-quality:
+    name: 🔍 Code Quality
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch full history for better analysis
+
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: 📦 Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt', '**/test_requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: 🔧 Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r test_requirements.txt
+        pip install flake8 black isort bandit safety
+
+    - name: 🎨 Check code formatting with Black
+      run: |
+        echo "🎨 Checking code formatting..."
+        black --check --diff .
+      continue-on-error: true
+
+    - name: 📝 Check import sorting with isort
+      run: |
+        echo "📝 Checking import sorting..."
+        isort --check-only --diff .
+      continue-on-error: true
+
+    - name: 🧹 Lint with flake8
+      run: |
+        echo "🧹 Linting code..."
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Treat all other errors as warnings
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=120 --statistics
+
+    - name: 🔒 Security scan with bandit
+      run: |
+        echo "🔒 Running security scan..."
+        bandit -r . -f json -o bandit-report.json || true
+        bandit -r . -ll || true
+      continue-on-error: true
+
+    - name: 🛡️ Check dependencies with safety
+      run: |
+        echo "🛡️ Checking dependencies for known vulnerabilities..."
+        safety check --json --output safety-report.json || true
+        safety check || true
+      continue-on-error: true
+
+  # Job 2: Unit Tests
+  unit-tests:
+    name: 🧪 Unit Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11']
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🐍 Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: 📦 Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-${{ matrix.python-version }}-pip-${{ hashFiles('**/requirements.txt', '**/test_requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.python-version }}-pip-
+
+    - name: 🔧 Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r test_requirements.txt
+
+    - name: 🧪 Run unit tests
+      run: |
+        python -m pytest tests/ -v \
+          --tb=short \
+          --cov=core \
+          --cov=app \
+          --cov-report=xml \
+          --cov-report=html \
+          --cov-report=term \
+          --junitxml=pytest-results.xml
+      env:
+        DISABLE_FIREBASE: true
+        AWS_ACCESS_KEY_ID: test
+        AWS_SECRET_ACCESS_KEY: test
+        S3_BUCKET_NAME: test-bucket
+
+    - name: 📊 Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results-${{ matrix.python-version }}
+        path: |
+          pytest-results.xml
+          htmlcov/
+          coverage.xml
+
+    - name: 📈 Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-${{ matrix.python-version }}
+        fail_ci_if_error: false
+
+  # Job 3: Lambda Handler Tests
+  lambda-tests:
+    name: ⚡ Lambda Handler Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: 🔧 Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: 🧪 Test Lambda handler import
+      run: |
+        python -c "
+        import sys
+        sys.path.append('.')
+        try:
+            from lambda_handler import lambda_handler
+            print('✅ Lambda handler imported successfully')
+        except ImportError as e:
+            print(f'❌ Failed to import lambda handler: {e}')
+            sys.exit(1)
+        "
+
+    - name: 🧪 Test Lambda handler execution
+      run: |
+        python -c "
+        import sys
+        import json
+        sys.path.append('.')
+        from lambda_handler import lambda_handler
+        
+        # Test different event formats
+        test_cases = [
+            {
+                'name': 'API Gateway v1',
+                'event': {
+                    'httpMethod': 'GET',
+                    'path': '/health',
+                    'headers': {},
+                    'queryStringParameters': None,
+                    'body': None,
+                    'isBase64Encoded': False
+                }
+            },
+            {
+                'name': 'API Gateway v2',
+                'event': {
+                    'version': '2.0',
+                    'requestContext': {'http': {'method': 'GET'}},
+                    'rawPath': '/health',
+                    'headers': {},
+                    'queryStringParameters': None,
+                    'body': None,
+                    'isBase64Encoded': False
+                }
+            },
+            {
+                'name': 'CORS Preflight',
+                'event': {
+                    'httpMethod': 'OPTIONS',
+                    'path': '/upload',
+                    'headers': {},
+                    'queryStringParameters': None,
+                    'body': None,
+                    'isBase64Encoded': False
+                }
+            }
+        ]
+        
+        class MockContext:
+            function_name = 'test-function'
+            aws_request_id = 'test-request-id'
+        
+        context = MockContext()
+        
+        for test_case in test_cases:
+            try:
+                result = lambda_handler(test_case['event'], context)
+                print(f'✅ {test_case[\"name\"]}: Status {result[\"statusCode\"]}')
+                
+                # Verify response structure
+                assert 'statusCode' in result
+                assert 'headers' in result
+                assert 'body' in result
+                assert isinstance(result['statusCode'], int)
+                
+                # Verify CORS headers
+                assert 'Access-Control-Allow-Origin' in result['headers']
+                
+            except Exception as e:
+                print(f'❌ {test_case[\"name\"]} failed: {e}')
+                sys.exit(1)
+        
+        print('✅ All Lambda handler tests passed')
+        "
+      env:
+        DISABLE_FIREBASE: true
+
+  # Job 4: Build Test
+  build-test:
+    name: 🏗️ Build Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: 📦 Test deployment package creation
+      run: |
+        echo "🏗️ Testing deployment package creation..."
+        
+        # Create package directory
+        mkdir -p package
+        
+        # Install dependencies
+        pip install -r requirements.txt -t package/
+        
+        # Copy application code
+        cp -r core package/
+        cp app.py package/
+        cp lambda_handler.py package/
+        
+        # Remove unnecessary files
+        find package/ -type d -name "__pycache__" -exec rm -rf {} + || true
+        find package/ -type d -name "*.egg-info" -exec rm -rf {} + || true
+        find package/ -type f -name "*.pyc" -delete || true
+        find package/ -type f -name "*.pyo" -delete || true
+        find package/ -name "tests" -type d -exec rm -rf {} + || true
+        
+        # Create zip file
+        cd package
+        zip -r ../test-package.zip . -x "*.git*" "*.DS_Store*" "*__pycache__*"
+        cd ..
+        
+        # Check package size
+        PACKAGE_SIZE=$(stat -f%z test-package.zip 2>/dev/null || stat -c%s test-package.zip)
+        echo "📦 Package size: $(($PACKAGE_SIZE / 1024 / 1024)) MB"
+        
+        # Verify package contents
+        echo "📋 Package contents:"
+        unzip -l test-package.zip | head -20
+        
+        # Test that the package can be imported
+        cd package
+        python -c "
+        import sys
+        sys.path.insert(0, '.')
+        try:
+            import app
+            import lambda_handler
+            import core.auth_middleware
+            import core.firestore_db
+            import core.s3_storage
+            print('✅ All modules can be imported from package')
+        except ImportError as e:
+            print(f'❌ Import error in package: {e}')
+            sys.exit(1)
+        "
+
+    - name: 📤 Upload test package
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-deployment-package
+        path: test-package.zip
+        retention-days: 1
+
+  # Job 5: Documentation Check
+  docs-check:
+    name: 📚 Documentation Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 📚 Check README and documentation
+      run: |
+        echo "📚 Checking documentation..."
+        
+        # Check if README exists and has content
+        if [ -f "README.md" ]; then
+          README_SIZE=$(wc -l < README.md)
+          if [ $README_SIZE -gt 10 ]; then
+            echo "✅ README.md exists and has content ($README_SIZE lines)"
+          else
+            echo "⚠️ README.md is too short"
+          fi
+        else
+          echo "❌ README.md is missing"
+          exit 1
+        fi
+        
+        # Check if ARCHITECTURE.md exists
+        if [ -f "ARCHITECTURE.md" ]; then
+          echo "✅ ARCHITECTURE.md exists"
+        else
+          echo "⚠️ ARCHITECTURE.md is missing"
+        fi
+        
+        # Check for requirements.txt
+        if [ -f "requirements.txt" ]; then
+          echo "✅ requirements.txt exists"
+          echo "📦 Dependencies:"
+          cat requirements.txt
+        else
+          echo "❌ requirements.txt is missing"
+          exit 1
+        fi
+
+    - name: 🔍 Check for TODO comments
+      run: |
+        echo "🔍 Checking for TODO comments..."
+        TODO_COUNT=$(grep -r "TODO\|FIXME\|XXX" --include="*.py" . | wc -l || echo "0")
+        echo "📝 Found $TODO_COUNT TODO/FIXME comments"
+        
+        if [ $TODO_COUNT -gt 0 ]; then
+          echo "📋 TODO items found:"
+          grep -r "TODO\|FIXME\|XXX" --include="*.py" . || true
+        fi
+
+  # Job 6: Summary
+  pr-summary:
+    name: 📋 PR Summary
+    runs-on: ubuntu-latest
+    needs: [code-quality, unit-tests, lambda-tests, build-test, docs-check]
+    if: always()
+    
+    steps:
+    - name: 📋 Generate PR summary
+      run: |
+        echo "📋 Pull Request Test Summary"
+        echo "=========================="
+        echo ""
+        
+        # Check job results
+        if [ "${{ needs.code-quality.result }}" = "success" ]; then
+          echo "✅ Code Quality: PASSED"
+        else
+          echo "❌ Code Quality: FAILED"
+        fi
+        
+        if [ "${{ needs.unit-tests.result }}" = "success" ]; then
+          echo "✅ Unit Tests: PASSED"
+        else
+          echo "❌ Unit Tests: FAILED"
+        fi
+        
+        if [ "${{ needs.lambda-tests.result }}" = "success" ]; then
+          echo "✅ Lambda Tests: PASSED"
+        else
+          echo "❌ Lambda Tests: FAILED"
+        fi
+        
+        if [ "${{ needs.build-test.result }}" = "success" ]; then
+          echo "✅ Build Test: PASSED"
+        else
+          echo "❌ Build Test: FAILED"
+        fi
+        
+        if [ "${{ needs.docs-check.result }}" = "success" ]; then
+          echo "✅ Documentation: PASSED"
+        else
+          echo "❌ Documentation: FAILED"
+        fi
+        
+        echo ""
+        
+        # Overall status
+        if [ "${{ needs.code-quality.result }}" = "success" ] && \
+           [ "${{ needs.unit-tests.result }}" = "success" ] && \
+           [ "${{ needs.lambda-tests.result }}" = "success" ] && \
+           [ "${{ needs.build-test.result }}" = "success" ] && \
+           [ "${{ needs.docs-check.result }}" = "success" ]; then
+          echo "🎉 All checks passed! This PR is ready for review."
+        else
+          echo "🚨 Some checks failed. Please review and fix the issues."
+          exit 1
+        fi

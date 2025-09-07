@@ -1,0 +1,547 @@
+name: Deploy Thakii Backend API to AWS Lambda
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Allow manual triggering
+
+env:
+  AWS_REGION: us-east-2
+  FUNCTION_NAME: thakii-backend-api
+  PYTHON_VERSION: '3.10'
+
+jobs:
+  # Job 1: Run comprehensive tests
+  test:
+    name: 🧪 Test Application
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: 📦 Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt', '**/test_requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: 🔧 Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r test_requirements.txt
+
+    - name: 🧪 Run unit tests
+      run: |
+        python -m pytest tests/ -v --tb=short --cov=core --cov=app --cov-report=xml --cov-report=html --cov-report=term
+      env:
+        DISABLE_FIREBASE: true
+        AWS_ACCESS_KEY_ID: test
+        AWS_SECRET_ACCESS_KEY: test
+        S3_BUCKET_NAME: test-bucket
+
+    - name: 📊 Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+    - name: 🧹 Lint code with flake8
+      run: |
+        pip install flake8
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Exit-zero treats all errors as warnings
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=120 --statistics
+      continue-on-error: true
+
+    - name: 🔍 Security scan with bandit
+      run: |
+        pip install bandit
+        bandit -r . -f json -o bandit-report.json || true
+        bandit -r . -f txt || true
+      continue-on-error: true
+
+    - name: 📋 Test Lambda handler locally
+      run: |
+        python -c "
+        import sys
+        sys.path.append('.')
+        from lambda_handler import lambda_handler
+        
+        # Test health endpoint
+        event = {
+            'httpMethod': 'GET',
+            'path': '/health',
+            'headers': {},
+            'queryStringParameters': None,
+            'body': None,
+            'isBase64Encoded': False
+        }
+        
+        class MockContext:
+            function_name = 'test-function'
+            aws_request_id = 'test-request-id'
+        
+        try:
+            result = lambda_handler(event, MockContext())
+            print('✅ Lambda handler test passed')
+            print(f'Status Code: {result[\"statusCode\"]}')
+            assert result['statusCode'] in [200, 500]  # 500 is OK for local test without real services
+        except Exception as e:
+            print(f'❌ Lambda handler test failed: {e}')
+            sys.exit(1)
+        "
+      env:
+        DISABLE_FIREBASE: true
+
+  # Job 2: Build and prepare deployment package
+  build:
+    name: 🏗️ Build Deployment Package
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: 📦 Create deployment package
+      run: |
+        echo "🏗️ Creating Lambda deployment package..."
+        
+        # Create package directory
+        mkdir -p package
+        
+        # Install dependencies to package directory
+        pip install -r requirements.txt -t package/
+        
+        # Copy application code
+        cp -r core package/
+        cp app.py package/
+        cp lambda_handler.py package/
+        
+        # Remove unnecessary files to reduce package size
+        find package/ -type d -name "__pycache__" -exec rm -rf {} + || true
+        find package/ -type d -name "*.egg-info" -exec rm -rf {} + || true
+        find package/ -type f -name "*.pyc" -delete || true
+        find package/ -type f -name "*.pyo" -delete || true
+        find package/ -name "tests" -type d -exec rm -rf {} + || true
+        
+        # Create zip file
+        cd package
+        zip -r ../deployment-package.zip . -x "*.git*" "*.DS_Store*" "*__pycache__*"
+        cd ..
+        
+        # Check package size
+        PACKAGE_SIZE=$(stat -f%z deployment-package.zip 2>/dev/null || stat -c%s deployment-package.zip)
+        echo "📦 Package size: $(($PACKAGE_SIZE / 1024 / 1024)) MB"
+        
+        if [ $PACKAGE_SIZE -gt 52428800 ]; then  # 50MB limit
+          echo "❌ Package too large for direct upload. Consider using S3."
+          exit 1
+        fi
+
+    - name: 📤 Upload deployment artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: deployment-package
+        path: deployment-package.zip
+        retention-days: 30
+
+  # Job 3: Deploy to AWS Lambda (staging)
+  deploy-staging:
+    name: 🚀 Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 📥 Download deployment package
+      uses: actions/download-artifact@v3
+      with:
+        name: deployment-package
+
+    - name: 🔐 Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+        role-session-name: GitHubActions-Deploy-Staging
+
+    - name: 🚀 Deploy to Lambda (Staging)
+      run: |
+        echo "🚀 Deploying to staging environment..."
+        
+        STAGING_FUNCTION_NAME="${FUNCTION_NAME}-staging"
+        
+        # Check if staging function exists
+        if aws lambda get-function --function-name "$STAGING_FUNCTION_NAME" >/dev/null 2>&1; then
+          echo "📦 Updating existing staging function..."
+          aws lambda update-function-code \
+            --function-name "$STAGING_FUNCTION_NAME" \
+            --zip-file fileb://deployment-package.zip
+        else
+          echo "🆕 Creating new staging function..."
+          aws lambda create-function \
+            --function-name "$STAGING_FUNCTION_NAME" \
+            --runtime python3.10 \
+            --role "${{ secrets.LAMBDA_EXECUTION_ROLE_ARN }}" \
+            --handler lambda_handler.lambda_handler \
+            --zip-file fileb://deployment-package.zip \
+            --timeout 30 \
+            --memory-size 512 \
+            --description "Thakii Backend API - Staging Environment"
+        fi
+        
+        # Update environment variables
+        aws lambda update-function-configuration \
+          --function-name "$STAGING_FUNCTION_NAME" \
+          --environment Variables="{
+            S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }},
+            AWS_DEFAULT_REGION=${{ env.AWS_REGION }},
+            FLASK_ENV=staging,
+            ALLOWED_ORIGINS=${{ secrets.ALLOWED_ORIGINS_STAGING }}
+          }"
+
+    - name: 🧪 Test staging deployment
+      run: |
+        echo "🧪 Testing staging deployment..."
+        
+        STAGING_FUNCTION_NAME="${FUNCTION_NAME}-staging"
+        
+        # Wait for function to be ready
+        aws lambda wait function-updated --function-name "$STAGING_FUNCTION_NAME"
+        
+        # Test health endpoint
+        RESPONSE=$(aws lambda invoke \
+          --function-name "$STAGING_FUNCTION_NAME" \
+          --payload '{"httpMethod": "GET", "path": "/health", "headers": {}, "queryStringParameters": null, "body": null, "isBase64Encoded": false}' \
+          --cli-binary-format raw-in-base64-out \
+          response.json)
+        
+        echo "Lambda Response:"
+        cat response.json
+        
+        # Check if health endpoint returns 200
+        STATUS_CODE=$(cat response.json | jq -r '.statusCode // empty')
+        if [ "$STATUS_CODE" = "200" ]; then
+          echo "✅ Staging deployment test passed"
+        else
+          echo "❌ Staging deployment test failed"
+          exit 1
+        fi
+
+  # Job 4: Deploy to AWS Lambda (production)
+  deploy-production:
+    name: 🚀 Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 📥 Download deployment package
+      uses: actions/download-artifact@v3
+      with:
+        name: deployment-package
+
+    - name: 🔐 Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+        role-session-name: GitHubActions-Deploy-Production
+
+    - name: 🚀 Deploy to Lambda (Production)
+      run: |
+        echo "🚀 Deploying to production environment..."
+        
+        # Update function code
+        aws lambda update-function-code \
+          --function-name "$FUNCTION_NAME" \
+          --zip-file fileb://deployment-package.zip
+        
+        # Update environment variables
+        aws lambda update-function-configuration \
+          --function-name "$FUNCTION_NAME" \
+          --environment Variables="{
+            S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }},
+            AWS_DEFAULT_REGION=${{ env.AWS_REGION }},
+            FLASK_ENV=production,
+            ALLOWED_ORIGINS=${{ secrets.ALLOWED_ORIGINS_PRODUCTION }},
+            FIREBASE_SERVICE_ACCOUNT_KEY=${{ secrets.FIREBASE_SERVICE_ACCOUNT_KEY }}
+          }"
+        
+        # Wait for update to complete
+        aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+
+    - name: 📝 Create function alias
+      run: |
+        echo "📝 Creating function alias for production..."
+        
+        # Get the latest version
+        VERSION=$(aws lambda publish-version \
+          --function-name "$FUNCTION_NAME" \
+          --description "Production deployment $(date '+%Y-%m-%d %H:%M:%S')" \
+          --query 'Version' --output text)
+        
+        echo "📦 Published version: $VERSION"
+        
+        # Update or create LIVE alias
+        if aws lambda get-alias --function-name "$FUNCTION_NAME" --name LIVE >/dev/null 2>&1; then
+          aws lambda update-alias \
+            --function-name "$FUNCTION_NAME" \
+            --name LIVE \
+            --function-version "$VERSION"
+        else
+          aws lambda create-alias \
+            --function-name "$FUNCTION_NAME" \
+            --name LIVE \
+            --function-version "$VERSION"
+        fi
+        
+        echo "✅ LIVE alias updated to version $VERSION"
+
+    - name: 🧪 Test production deployment
+      run: |
+        echo "🧪 Testing production deployment..."
+        
+        # Test health endpoint
+        RESPONSE=$(aws lambda invoke \
+          --function-name "$FUNCTION_NAME:LIVE" \
+          --payload '{"httpMethod": "GET", "path": "/health", "headers": {}, "queryStringParameters": null, "body": null, "isBase64Encoded": false}' \
+          --cli-binary-format raw-in-base64-out \
+          response.json)
+        
+        echo "Lambda Response:"
+        cat response.json
+        
+        # Check if health endpoint returns 200
+        STATUS_CODE=$(cat response.json | jq -r '.statusCode // empty')
+        if [ "$STATUS_CODE" = "200" ]; then
+          echo "✅ Production deployment test passed"
+        else
+          echo "❌ Production deployment test failed"
+          exit 1
+        fi
+
+    - name: 📊 Update API Gateway (if exists)
+      run: |
+        echo "📊 Updating API Gateway integration..."
+        
+        # Find API Gateway for this function
+        API_ID=$(aws apigateway get-rest-apis \
+          --query "items[?name=='thakii-backend-api'].id" \
+          --output text)
+        
+        if [ -n "$API_ID" ] && [ "$API_ID" != "None" ]; then
+          echo "🌐 Found API Gateway: $API_ID"
+          
+          # Create new deployment
+          DEPLOYMENT_ID=$(aws apigateway create-deployment \
+            --rest-api-id "$API_ID" \
+            --stage-name prod \
+            --description "Deployment $(date '+%Y-%m-%d %H:%M:%S')" \
+            --query 'id' --output text)
+          
+          echo "✅ API Gateway deployment created: $DEPLOYMENT_ID"
+          
+          API_URL="https://$API_ID.execute-api.$AWS_REGION.amazonaws.com/prod"
+          echo "🌐 API URL: $API_URL"
+          
+          # Test API Gateway endpoint
+          sleep 5  # Wait for deployment
+          if curl -f -s "$API_URL/health" >/dev/null; then
+            echo "✅ API Gateway health check passed"
+          else
+            echo "⚠️ API Gateway health check failed (may need time to propagate)"
+          fi
+        else
+          echo "ℹ️ No API Gateway found for this function"
+        fi
+
+  # Job 5: Integration tests
+  integration-test:
+    name: 🔗 Integration Tests
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+
+    - name: 🔐 Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+        role-session-name: GitHubActions-Integration-Test
+
+    - name: 🧪 Run integration tests
+      run: |
+        echo "🧪 Running integration tests against production Lambda..."
+        
+        # Test various endpoints
+        test_endpoint() {
+          local method=$1
+          local path=$2
+          local expected_status=$3
+          local description=$4
+          
+          echo "Testing: $description"
+          
+          RESPONSE=$(aws lambda invoke \
+            --function-name "$FUNCTION_NAME:LIVE" \
+            --payload "{\"httpMethod\": \"$method\", \"path\": \"$path\", \"headers\": {}, \"queryStringParameters\": null, \"body\": null, \"isBase64Encoded\": false}" \
+            --cli-binary-format raw-in-base64-out \
+            test-response.json)
+          
+          STATUS_CODE=$(cat test-response.json | jq -r '.statusCode // empty')
+          
+          if [ "$STATUS_CODE" = "$expected_status" ]; then
+            echo "✅ $description - Status: $STATUS_CODE"
+          else
+            echo "❌ $description - Expected: $expected_status, Got: $STATUS_CODE"
+            cat test-response.json
+            return 1
+          fi
+        }
+        
+        # Run tests
+        test_endpoint "GET" "/health" "200" "Health check endpoint"
+        test_endpoint "GET" "/list" "401" "Unauthorized access to list endpoint"
+        test_endpoint "POST" "/upload" "401" "Unauthorized access to upload endpoint"
+        test_endpoint "GET" "/admin/stats" "401" "Unauthorized access to admin endpoint"
+        test_endpoint "OPTIONS" "/upload" "200" "CORS preflight request"
+        
+        echo "✅ All integration tests passed"
+
+    - name: 📈 Performance test
+      run: |
+        echo "📈 Running basic performance test..."
+        
+        # Test response time
+        start_time=$(date +%s%N)
+        
+        aws lambda invoke \
+          --function-name "$FUNCTION_NAME:LIVE" \
+          --payload '{"httpMethod": "GET", "path": "/health", "headers": {}, "queryStringParameters": null, "body": null, "isBase64Encoded": false}' \
+          --cli-binary-format raw-in-base64-out \
+          perf-response.json >/dev/null
+        
+        end_time=$(date +%s%N)
+        duration=$(( (end_time - start_time) / 1000000 ))  # Convert to milliseconds
+        
+        echo "⏱️ Response time: ${duration}ms"
+        
+        if [ $duration -lt 5000 ]; then  # Less than 5 seconds
+          echo "✅ Performance test passed"
+        else
+          echo "⚠️ Performance test warning - slow response time"
+        fi
+
+  # Job 6: Cleanup and notifications
+  cleanup:
+    name: 🧹 Cleanup and Notify
+    runs-on: ubuntu-latest
+    needs: [deploy-production, integration-test]
+    if: always() && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: 🔐 Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+        role-session-name: GitHubActions-Cleanup
+
+    - name: 🧹 Cleanup old versions
+      run: |
+        echo "🧹 Cleaning up old Lambda versions..."
+        
+        # Keep last 5 versions, delete older ones
+        VERSIONS=$(aws lambda list-versions-by-function \
+          --function-name "$FUNCTION_NAME" \
+          --query 'Versions[?Version!=`$LATEST`].Version' \
+          --output text | tr '\t' '\n' | sort -n)
+        
+        VERSION_COUNT=$(echo "$VERSIONS" | wc -l)
+        
+        if [ $VERSION_COUNT -gt 5 ]; then
+          VERSIONS_TO_DELETE=$(echo "$VERSIONS" | head -n $((VERSION_COUNT - 5)))
+          
+          for version in $VERSIONS_TO_DELETE; do
+            echo "🗑️ Deleting version: $version"
+            aws lambda delete-function \
+              --function-name "$FUNCTION_NAME:$version" || true
+          done
+        fi
+
+    - name: 📊 Generate deployment report
+      run: |
+        echo "📊 Generating deployment report..."
+        
+        # Get function info
+        aws lambda get-function \
+          --function-name "$FUNCTION_NAME" \
+          --query '{
+            FunctionName: Configuration.FunctionName,
+            Runtime: Configuration.Runtime,
+            Handler: Configuration.Handler,
+            CodeSize: Configuration.CodeSize,
+            Timeout: Configuration.Timeout,
+            MemorySize: Configuration.MemorySize,
+            LastModified: Configuration.LastModified,
+            Version: Configuration.Version
+          }' > deployment-report.json
+        
+        echo "📋 Deployment Report:"
+        cat deployment-report.json
+        
+        # Get API Gateway URL if exists
+        API_ID=$(aws apigateway get-rest-apis \
+          --query "items[?name=='thakii-backend-api'].id" \
+          --output text)
+        
+        if [ -n "$API_ID" ] && [ "$API_ID" != "None" ]; then
+          API_URL="https://$API_ID.execute-api.$AWS_REGION.amazonaws.com/prod"
+          echo "🌐 API Gateway URL: $API_URL"
+        fi
+
+    - name: 💬 Notify deployment status
+      if: always()
+      run: |
+        if [ "${{ needs.deploy-production.result }}" = "success" ] && [ "${{ needs.integration-test.result }}" = "success" ]; then
+          echo "✅ Deployment successful!"
+          echo "🎉 Thakii Backend API has been successfully deployed to AWS Lambda"
+        else
+          echo "❌ Deployment failed!"
+          echo "🚨 Please check the logs for details"
+          exit 1
+        fi

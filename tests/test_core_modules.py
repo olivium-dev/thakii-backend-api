@@ -31,6 +31,7 @@ class TestAuthMiddleware:
     def test_verify_auth_token_success(self, mock_verify):
         """Test successful token verification"""
         from core.auth_middleware import verify_auth_token
+        from flask import Flask
         
         mock_verify.return_value = {
             'uid': 'test-uid',
@@ -38,9 +39,8 @@ class TestAuthMiddleware:
             'email_verified': True
         }
         
-        with patch('flask.request') as mock_request:
-            mock_request.headers = {'Authorization': 'Bearer valid-token'}
-            
+        app = Flask(__name__)
+        with app.test_request_context(headers={'Authorization': 'Bearer valid-token'}):
             result, error = verify_auth_token()
             assert error is None
             assert result['uid'] == 'test-uid'
@@ -49,10 +49,10 @@ class TestAuthMiddleware:
     def test_verify_auth_token_no_header(self):
         """Test token verification without auth header"""
         from core.auth_middleware import verify_auth_token
+        from flask import Flask
         
-        with patch('flask.request') as mock_request:
-            mock_request.headers = {}
-            
+        app = Flask(__name__)
+        with app.test_request_context():
             result, error = verify_auth_token()
             assert result is None
             assert 'No Authorization header' in error
@@ -60,10 +60,10 @@ class TestAuthMiddleware:
     def test_verify_auth_token_invalid_format(self):
         """Test token verification with invalid header format"""
         from core.auth_middleware import verify_auth_token
+        from flask import Flask
         
-        with patch('flask.request') as mock_request:
-            mock_request.headers = {'Authorization': 'InvalidFormat token'}
-            
+        app = Flask(__name__)
+        with app.test_request_context(headers={'Authorization': 'InvalidFormat token'}):
             result, error = verify_auth_token()
             assert result is None
             assert 'Invalid Authorization header format' in error
@@ -168,7 +168,8 @@ class TestS3Storage:
         from core.s3_storage import S3Storage
         
         storage = S3Storage()
-        assert storage.bucket_name == 'thakii-video-storage-1753883631'
+        # In test environment, bucket name comes from S3_BUCKET_NAME env var
+        assert storage.bucket_name == 'test-bucket'
         assert storage.region == 'us-east-2'
         mock_boto_client.assert_called_with('s3')
     

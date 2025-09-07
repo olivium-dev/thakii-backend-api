@@ -358,3 +358,4 @@ For support and questions:
 - [thakii-worker-service](https://github.com/oudaykhaled/thakii-worker-service) - Background processing
 - [thakii-lambda-router](https://github.com/oudaykhaled/thakii-lambda-router) - Load balancer
 - [thakii-infrastructure](https://github.com/oudaykhaled/thakii-infrastructure) - Infrastructure as Code
+# GitHub Actions Pipeline with AWS Secrets ✅

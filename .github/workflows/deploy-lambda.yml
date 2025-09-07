@@ -130,13 +130,8 @@ jobs:
         # Create package directory
         mkdir -p package
         
-        # Install dependencies to package directory
-        pip install -r requirements.txt -t package/
-        
-        # Copy application code
-        cp -r core package/
-        cp app.py package/
-        cp lambda_handler.py package/
+        # Copy simplified handler (no dependencies needed for demo)
+        cp lambda_handler_simple.py package/lambda_handler.py
         
         # Remove unnecessary files to reduce package size
         find package/ -type d -name "__pycache__" -exec rm -rf {} + || true

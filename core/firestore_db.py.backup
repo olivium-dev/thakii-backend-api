@@ -10,7 +10,7 @@ load_dotenv()
 
 # Initialize Firebase Admin SDK
 def initialize_firestore():
-    """Initialize Firestore with explicit project configuration"""
+    """Initialize Firestore with application default credentials or service account key"""
     # Check if Firebase is disabled
     if os.getenv('DISABLE_FIREBASE', '').lower() == 'true':
         print("📝 Firebase disabled via DISABLE_FIREBASE environment variable")
@@ -18,24 +18,15 @@ def initialize_firestore():
         
     try:
         if not firebase_admin._apps:
-            # Get project ID from environment variables
-            project_id = os.getenv('GOOGLE_CLOUD_PROJECT') or os.getenv('FIREBASE_PROJECT_ID') or 'thakii-973e3'
-            
             # Try to use service account key file if provided
             service_account_path = os.getenv('FIREBASE_SERVICE_ACCOUNT_KEY')
             
             if service_account_path and os.path.exists(service_account_path):
-                print(f"🔥 Initializing Firebase with service account and project ID: {project_id}")
                 cred = credentials.Certificate(service_account_path)
-                firebase_admin.initialize_app(cred, {
-                    'projectId': project_id
-                })
+                firebase_admin.initialize_app(cred)
             else:
-                print(f"🔥 Initializing Firebase with default credentials and project ID: {project_id}")
-                # Use application default credentials with explicit project ID
-                firebase_admin.initialize_app(options={
-                    'projectId': project_id
-                })
+                # Use application default credentials (for local development or GCP environments)
+                firebase_admin.initialize_app()
         
         return firestore.client()
     except Exception as e:
@@ -197,4 +188,4 @@ class FirestoreDB:
             }
 
 # Global instance
-firestore_db = FirestoreDB()
+firestore_db = FirestoreDB() 

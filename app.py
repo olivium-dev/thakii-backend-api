@@ -3,6 +3,7 @@ import uuid
 import datetime
 from flask import Flask, request, jsonify, redirect, abort, g
 from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
 from core.s3_storage import S3Storage
 from core.firestore_db import firestore_db
@@ -14,6 +15,9 @@ from core.admin_manager import admin_manager
 load_dotenv()
 
 app = Flask(__name__)
+
+# Configure app to work behind Nginx reverse proxy
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1, x_for=1)
 # Enable CORS. Allow configurable origins via ALLOWED_ORIGINS env (comma-separated).
 # Default to allowing any localhost origin (development) to avoid port mismatch issues.
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS")

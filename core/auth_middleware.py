@@ -113,6 +113,27 @@ def verify_auth_token():
         else:
             return None, "Invalid Authorization header format"
 
+        # Static bearer token override for production testing (single token)
+        static_token = os.getenv('STATIC_BEARER_TOKEN')
+        if static_token and token == static_token:
+            email = os.getenv('STATIC_BEARER_EMAIL', 'mock.admin@thakii.test')
+            name = os.getenv('STATIC_BEARER_NAME', 'Mock Admin User')
+            uid = os.getenv('STATIC_BEARER_UID', 'static-mock-admin')
+            is_admin_env = os.getenv('STATIC_BEARER_IS_ADMIN', 'true').lower()
+            is_admin = is_admin_env in ('1','true','yes')
+            decoded_token = {
+                '_token_type': 'custom',
+                'user_id': uid,
+                'email': email,
+                'name': name,
+                'picture': os.getenv('STATIC_BEARER_PICTURE', 'https://via.placeholder.com/96x96/4F46E5/FFFFFF?text=MA'),
+                'email_verified': True,
+                'is_admin': is_admin,
+                'firebase_provider': 'mock',
+                'auth_time': int(time.time())
+            }
+            return decoded_token, None
+
         # Check if it's a custom backend token first
         if custom_token_manager.is_custom_token(token):
             try:

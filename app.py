@@ -7,7 +7,8 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
 from core.s3_storage import S3Storage
 from core.firestore_db import firestore_db
-from core.auth_middleware import require_auth, require_admin, get_current_user, is_super_admin
+from core.auth_middleware import require_auth, require_admin, get_current_user, is_super_admin, verify_auth_token
+from core.custom_auth import custom_token_manager
 from core.push_notification_service import push_service
 from core.server_manager import server_manager
 from core.admin_manager import admin_manager
@@ -45,6 +46,106 @@ def health_check():
         "storage": "S3",
         "timestamp": datetime.datetime.now().isoformat()
     })
+
+@app.route("/auth/exchange-token", methods=["POST"])
+def exchange_firebase_token():
+    """
+    Exchange Firebase token for custom backend token
+    
+    Accepts Firebase ID token and returns a custom backend token with 72-hour expiration
+    """
+    try:
+        # Verify the Firebase token first
+        token_data, error = verify_auth_token()
+        
+        if error:
+            return jsonify({
+                "error": "Invalid Firebase token",
+                "message": error
+            }), 401
+        
+        # Only exchange Firebase tokens (not custom tokens)
+        token_type = token_data.get('_token_type', 'firebase')
+        if token_type == 'custom':
+            return jsonify({
+                "error": "Token already custom",
+                "message": "This is already a custom backend token",
+                "expires_at": token_data.get('exp'),
+                "token_type": "custom"
+            }), 400
+        
+        # Generate custom token from Firebase user data
+        custom_token = custom_token_manager.generate_custom_token(token_data)
+        
+        # Extract user info for response
+        user_info = {
+            'uid': token_data.get('uid') or token_data.get('user_id') or token_data.get('sub'),
+            'email': token_data.get('email'),
+            'name': token_data.get('name', token_data.get('email', '').split('@')[0] if token_data.get('email') else 'Unknown'),
+            'picture': token_data.get('picture'),
+            'email_verified': token_data.get('email_verified', False),
+            'is_admin': token_data.get('email') in ['ouday.khaled@gmail.com', 'appsaawt@gmail.com'] if token_data.get('email') else False,
+            'firebase_provider': token_data.get('firebase', {}).get('sign_in_provider') if isinstance(token_data.get('firebase'), dict) else None
+        }
+        
+        return jsonify({
+            "success": True,
+            "message": "Token exchanged successfully",
+            "custom_token": custom_token,
+            "expires_in_hours": 72,
+            "expires_at": datetime.datetime.utcnow().timestamp() + (72 * 3600),
+            "user": user_info,
+            "token_type": "custom_backend"
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Token exchange failed",
+            "message": str(e)
+        }), 500
+
+@app.route("/auth/user", methods=["GET"])
+@require_auth
+def get_current_user_info():
+    """
+    Get current authenticated user information
+    
+    Returns detailed user info from the current token (Firebase or Custom)
+    """
+    try:
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({
+                "error": "No user data available",
+                "message": "User information not found in token"
+            }), 400
+        
+        # Add token expiration info if available
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            token = auth_header.split(' ')[1]
+            if custom_token_manager.is_custom_token(token):
+                try:
+                    decoded = custom_token_manager.verify_custom_token(token)
+                    current_user['token_expires_at'] = decoded.get('exp')
+                    current_user['token_issued_at'] = decoded.get('iat')
+                    current_user['token_type'] = 'custom_backend'
+                except:
+                    pass
+            else:
+                current_user['token_type'] = 'firebase'
+        
+        return jsonify({
+            "success": True,
+            "user": current_user,
+            "timestamp": datetime.datetime.now().isoformat()
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Failed to get user info",
+            "message": str(e)
+        }), 500
 
 @app.route("/upload", methods=["POST"])
 @require_auth

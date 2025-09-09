@@ -12,6 +12,9 @@ import requests
 import jwt
 from jwt.algorithms import RSAAlgorithm
 
+# Import custom token manager
+from .custom_auth import custom_token_manager
+
 load_dotenv()
 
 # Super admin configuration
@@ -77,7 +80,7 @@ def _verify_with_jwks(token: str):
     return decoded
 
 def verify_auth_token():
-    """Verify Firebase authentication token from Authorization header"""
+    """Verify authentication token (Firebase or Custom) from Authorization header"""
     auth_header = request.headers.get('Authorization')
     
     if not auth_header:
@@ -90,21 +93,35 @@ def verify_auth_token():
         else:
             return None, "Invalid Authorization header format"
 
+        # Check if it's a custom backend token first
+        if custom_token_manager.is_custom_token(token):
+            try:
+                decoded_token = custom_token_manager.verify_custom_token(token)
+                # Add token type for downstream processing
+                decoded_token['_token_type'] = 'custom'
+                return decoded_token, None
+            except Exception as custom_err:
+                return None, f"Custom token verification failed: {str(custom_err)}"
+
+        # If not custom token, try Firebase verification
         # Try Firebase Admin first (if initialized)
         try:
             if firebase_admin._apps:
                 decoded_token = auth.verify_id_token(token)
+                decoded_token['_token_type'] = 'firebase'
                 return decoded_token, None
         except Exception as primary_err:
             # Fallback to JWKS-based verification (does not require ADC)
             try:
                 decoded_token = _verify_with_jwks(token)
+                decoded_token['_token_type'] = 'firebase'
                 return decoded_token, None
             except Exception as fallback_err:
-                return None, f"Token verification failed: {str(fallback_err)}"
+                return None, f"Firebase token verification failed: {str(fallback_err)}"
 
         # If no Firebase app is initialized, use JWKS fallback
         decoded_token = _verify_with_jwks(token)
+        decoded_token['_token_type'] = 'firebase'
         return decoded_token, None
     except Exception as e:
         return None, f"Token verification failed: {str(e)}"
@@ -119,13 +136,27 @@ def require_auth(f):
             return jsonify({"error": "Authentication required", "message": error}), 401
         
         # Store user information in Flask's g object for use in the request
-        # Handle both Firebase Admin SDK format (uid) and JWKS format (user_id/sub)
-        uid = token_data.get('uid') or token_data.get('user_id') or token_data.get('sub')
-        g.current_user = {
-            'uid': uid,
-            'email': token_data.get('email'),
-            'email_verified': token_data.get('email_verified', False)
-        }
+        # Handle both Firebase and Custom token formats
+        token_type = token_data.get('_token_type', 'firebase')
+        
+        if token_type == 'custom':
+            # Custom token format
+            user_info = custom_token_manager.extract_user_info(token_data)
+            g.current_user = user_info
+        else:
+            # Firebase token format (uid/user_id/sub)
+            uid = token_data.get('uid') or token_data.get('user_id') or token_data.get('sub')
+            g.current_user = {
+                'uid': uid,
+                'email': token_data.get('email'),
+                'name': token_data.get('name', token_data.get('email', '').split('@')[0] if token_data.get('email') else 'Unknown'),
+                'picture': token_data.get('picture'),
+                'email_verified': token_data.get('email_verified', False),
+                'is_admin': token_data.get('email') in SUPER_ADMINS if token_data.get('email') else False,
+                'firebase_provider': token_data.get('firebase', {}).get('sign_in_provider') if isinstance(token_data.get('firebase'), dict) else None,
+                'auth_time': token_data.get('auth_time'),
+                'token_type': token_type
+            }
         
         return f(*args, **kwargs)
     
@@ -140,20 +171,38 @@ def require_admin(f):
         if error:
             return jsonify({"error": "Authentication required", "message": error}), 401
         
-        user_email = token_data.get('email')
+        # Handle both Firebase and Custom token formats for admin check
+        token_type = token_data.get('_token_type', 'firebase')
         
-        if not user_email or user_email not in SUPER_ADMINS:
+        if token_type == 'custom':
+            # Custom token already has is_admin flag
+            is_admin = token_data.get('is_admin', False)
+            user_email = token_data.get('email')
+        else:
+            # Firebase token - check email against admin list
+            user_email = token_data.get('email')
+            is_admin = user_email in SUPER_ADMINS if user_email else False
+        
+        if not is_admin:
             return jsonify({"error": "Admin access required", "message": "Insufficient privileges"}), 403
         
         # Store user information in Flask's g object
-        # Handle both Firebase Admin SDK format (uid) and JWKS format (user_id/sub)
-        uid = token_data.get('uid') or token_data.get('user_id') or token_data.get('sub')
-        g.current_user = {
-            'uid': uid,
-            'email': user_email,
-            'email_verified': token_data.get('email_verified', False),
-            'is_admin': True
-        }
+        if token_type == 'custom':
+            user_info = custom_token_manager.extract_user_info(token_data)
+            g.current_user = user_info
+        else:
+            uid = token_data.get('uid') or token_data.get('user_id') or token_data.get('sub')
+            g.current_user = {
+                'uid': uid,
+                'email': user_email,
+                'name': token_data.get('name', user_email.split('@')[0] if user_email else 'Unknown'),
+                'picture': token_data.get('picture'),
+                'email_verified': token_data.get('email_verified', False),
+                'is_admin': True,
+                'firebase_provider': token_data.get('firebase', {}).get('sign_in_provider') if isinstance(token_data.get('firebase'), dict) else None,
+                'auth_time': token_data.get('auth_time'),
+                'token_type': token_type
+            }
         
         return f(*args, **kwargs)
     

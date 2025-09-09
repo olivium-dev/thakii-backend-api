@@ -118,6 +118,7 @@ def verify_auth_token():
 
         # Static bearer token override for production testing (single token)
         static_token = os.getenv('STATIC_BEARER_TOKEN')
+        print(f"DEBUG: static_token={repr(static_token)}, token={repr(token)}, match={static_token and token == static_token}")
         if static_token and token == static_token:
             email = os.getenv('STATIC_BEARER_EMAIL', 'mock.admin@thakii.test')
             name = os.getenv('STATIC_BEARER_NAME', 'Mock Admin User')

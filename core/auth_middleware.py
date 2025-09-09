@@ -4,6 +4,7 @@ from flask import request, jsonify, g
 import firebase_admin
 from firebase_admin import auth
 from dotenv import load_dotenv
+from pathlib import Path
 
 # Fallback imports for JWKS-based verification (no ADC required)
 import json
@@ -15,7 +16,9 @@ from jwt.algorithms import RSAAlgorithm
 # Import custom token manager
 from .custom_auth import custom_token_manager
 
-load_dotenv()
+# Ensure environment variables are loaded from the repository root when running under systemd
+_BASE_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(dotenv_path=str(_BASE_DIR / '.env'), override=False)
 
 # Super admin configuration
 SUPER_ADMINS = ['ouday.khaled@gmail.com', 'appsaawt@gmail.com']

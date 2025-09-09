@@ -145,8 +145,13 @@ class CustomTokenManager:
         try:
             # Decode without verification to check token type
             unverified = jwt.decode(token, options={"verify_signature": False})
-            return unverified.get('token_type') == 'custom_backend' and unverified.get('iss') == CUSTOM_TOKEN_ISSUER
-        except:
+            token_type = unverified.get('token_type')
+            issuer = unverified.get('iss')
+            is_custom = token_type == 'custom_backend' and issuer == CUSTOM_TOKEN_ISSUER
+            print(f"DEBUG: is_custom_token - token_type: {token_type}, issuer: {issuer}, is_custom: {is_custom}")
+            return is_custom
+        except Exception as e:
+            print(f"DEBUG: is_custom_token error: {str(e)}")
             return False
     
     @staticmethod

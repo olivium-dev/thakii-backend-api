@@ -1,0 +1,145 @@
+name: Deploy Backend to Server - Simple
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment'
+        required: true
+        default: 'production'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Cloudflare CLI
+        run: |
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared-linux-amd64.deb
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.THAKII_02_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: Deploy Backend
+        run: |
+          echo "🚀 Starting backend deployment..."
+          
+          # Create deployment script
+          cat > deploy.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          
+          echo "📍 Connected to: $(hostname)"
+          echo "🛑 Stopping services..."
+          pkill -f 'python3 app.py' || true
+          sleep 5
+          
+          echo "📥 Updating code..."
+          cd thakii-backend-api
+          git pull origin main
+          
+          echo "🔧 Fixing Nginx CORS..."
+          sudo tee /etc/nginx/sites-available/thakii-backend.conf > /dev/null << 'NGINXCONF'
+server {
+    listen 80;
+    server_name thakii-02.fanusdigital.site;
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name thakii-02.fanusdigital.site;
+
+    ssl_certificate /etc/ssl/certs/thakii.crt;
+    ssl_certificate_key /etc/ssl/private/thakii.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options DENY always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-XSS-Protection "1; mode=block" always;
+
+    location / {
+        proxy_pass http://127.0.0.1:5001;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        client_max_body_size 500M;
+        proxy_connect_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+        proxy_buffering off;
+        proxy_request_buffering off;
+    }
+
+    access_log /var/log/nginx/thakii-backend.access.log;
+    error_log /var/log/nginx/thakii-backend.error.log;
+}
+NGINXCONF
+          
+          sudo nginx -t && sudo systemctl reload nginx
+          
+          echo "🐍 Setting up Python..."
+          if [ ! -d "venv" ]; then
+              python3 -m venv venv
+          fi
+          source venv/bin/activate
+          pip install -r requirements.txt
+          
+          echo "🔧 Configuring Flask..."
+          cat > .env << 'FLASKCONF'
+FLASK_ENV=production
+PORT=5001
+AWS_DEFAULT_REGION=us-east-2
+S3_BUCKET_NAME=thakii-video-storage-1753883631
+GOOGLE_CLOUD_PROJECT=thakii-973e3
+FIREBASE_PROJECT_ID=thakii-973e3
+ALLOWED_ORIGINS=https://thakii-frontend.netlify.app
+FLASKCONF
+          
+          echo "🚀 Starting backend..."
+          sudo lsof -ti:5001 | xargs sudo kill -9 2>/dev/null || true
+          sleep 3
+          
+          source venv/bin/activate
+          export $(cat .env | grep -v '^#' | xargs)
+          mkdir -p logs
+          nohup python3 app.py > logs/deploy.log 2>&1 &
+          echo $! > backend.pid
+          
+          sleep 15
+          
+          echo "🧪 Testing..."
+          curl -s http://127.0.0.1:5001/health
+          curl -s https://thakii-02.fanusdigital.site/health
+          
+          echo "✅ Deployment complete!"
+EOF
+          
+          # Execute deployment
+          chmod +x deploy.sh
+          scp -o ProxyCommand="cloudflared access ssh --hostname %h" deploy.sh ec2-user@thakii-02.fds-1.com:~/
+          ssh -o ProxyCommand="cloudflared access ssh --hostname %h" ec2-user@thakii-02.fds-1.com "chmod +x ~/deploy.sh && ~/deploy.sh"
+
+      - name: Test Deployment
+        run: |
+          echo "🧪 Testing deployment..."
+          
+          # Test health
+          HEALTH=$(curl -s https://thakii-02.fanusdigital.site/health)
+          echo "Health: $HEALTH"
+          
+          # Test CORS
+          curl -s -H "Origin: https://thakii-frontend.netlify.app" -X OPTIONS https://thakii-02.fanusdigital.site/health -v 2>&1 | grep -i access-control
+          
+          echo "✅ Deployment test complete!"

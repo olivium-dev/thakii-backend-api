@@ -27,20 +27,24 @@ class TestAuthMiddleware:
         assert is_super_admin('regular@user.com') == False
         assert is_super_admin('') == False
     
-    @patch('core.auth_middleware.auth.verify_id_token')
-    def test_verify_auth_token_success(self, mock_verify):
-        """Test successful token verification"""
+    @patch('firebase_admin._apps', {})
+    @patch('core.auth_middleware._verify_with_jwks')
+    def test_verify_auth_token_success(self, mock_jwks_verify):
+        """Test successful token verification with JWKS fallback"""
         from core.auth_middleware import verify_auth_token
         from flask import Flask
         
-        mock_verify.return_value = {
+        # Mock JWKS verification
+        mock_jwks_verify.return_value = {
             'uid': 'test-uid',
             'email': 'test@example.com',
             'email_verified': True
         }
         
         app = Flask(__name__)
-        with app.test_request_context(headers={'Authorization': 'Bearer valid-token'}):
+        # Use a proper JWT format token
+        jwt_token = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImtpZCI6InRlc3Qta2V5In0.eyJ1aWQiOiJ0ZXN0LXVpZCIsImVtYWlsIjoidGVzdEBleGFtcGxlLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfQ.test-signature'
+        with app.test_request_context(headers={'Authorization': f'Bearer {jwt_token}'}):
             result, error = verify_auth_token()
             assert error is None
             assert result['uid'] == 'test-uid'

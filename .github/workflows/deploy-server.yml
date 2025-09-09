@@ -1,0 +1,234 @@
+name: Deploy Backend to Server (CORS & Firebase Fix)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+        - production
+        - staging
+      server:
+        description: 'Server address for SSH'
+        required: true
+        default: 'thakii-02.fanusdigital.site'
+      ssh_user:
+        description: 'SSH username'
+        required: true
+        default: 'ec2-user'
+
+env:
+  FIREBASE_PROJECT_ID: 'thakii-973e3'
+  ALLOWED_ORIGINS: 'https://thakii-frontend.netlify.app'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Cloudflare CLI
+        run: |
+          # Install cloudflared for SSH access
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared-linux-amd64.deb
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.THAKII_02_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ inputs.server }} >> ~/.ssh/known_hosts || true
+
+      - name: Deploy Backend with CORS and Firebase Fixes
+        run: |
+          echo "🚀 Deploying Backend to ${{ inputs.server }}..."
+          
+          # SSH with Cloudflare proxy
+          ssh -o ProxyCommand="cloudflared access ssh --hostname %h" ${{ inputs.ssh_user }}@thakii-02.fds-1.com << 'SSHEOF'
+          
+          echo "📍 Connected to server: $(hostname)"
+          echo "🕐 Current time: $(date)"
+          
+          echo "🛑 Step 1: Stop existing services..."
+          pkill -f 'python3 app.py' || true
+          pkill -f 'python app.py' || true
+          sleep 5
+          
+          echo "📥 Step 2: Update backend code..."
+          cd thakii-backend-api
+          git fetch origin
+          git reset --hard origin/main
+          git pull origin main
+          echo "✅ Backend code updated to latest"
+          
+          echo "🔧 Step 3: Fix Nginx CORS (remove duplicate headers)..."
+          sudo cp /etc/nginx/sites-available/thakii-backend.conf /etc/nginx/sites-available/thakii-backend.conf.backup-$(date +%Y%m%d-%H%M%S)
+          
+          # Create Nginx config WITHOUT CORS headers (let Flask handle CORS)
+          sudo tee /etc/nginx/sites-available/thakii-backend.conf > /dev/null << 'NGINXEOF'
+server {
+    listen 80;
+    server_name ${{ inputs.server }};
+    return 301 https://\$server_name\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name ${{ inputs.server }};
+
+    # SSL Configuration
+    ssl_certificate /etc/ssl/certs/thakii.crt;
+    ssl_certificate_key /etc/ssl/private/thakii.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+
+    # Security headers (NO CORS - Flask handles it)
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options DENY always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-XSS-Protection "1; mode=block" always;
+
+    # Proxy to Flask backend
+    location / {
+        proxy_pass http://127.0.0.1:5001;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        
+        # Large file uploads
+        client_max_body_size 500M;
+        proxy_connect_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+        proxy_buffering off;
+        proxy_request_buffering off;
+    }
+
+    access_log /var/log/nginx/thakii-backend.access.log;
+    error_log /var/log/nginx/thakii-backend.error.log;
+}
+NGINXEOF
+          
+          echo "🧪 Step 4: Test and restart Nginx..."
+          sudo nginx -t
+          if [ $? -eq 0 ]; then
+              echo "✅ Nginx configuration valid"
+              sudo systemctl reload nginx
+              echo "✅ Nginx restarted"
+          else
+              echo "❌ Nginx configuration error"
+              exit 1
+          fi
+          
+          echo "🐍 Step 5: Setup Python environment..."
+          if [ ! -d "venv" ]; then
+              python3 -m venv venv
+          fi
+          
+          source venv/bin/activate
+          pip install -r requirements.txt
+          
+          echo "🔧 Step 6: Configure Flask with correct Firebase and CORS..."
+          cat > .env << 'ENVEOF'
+# Flask Configuration
+FLASK_ENV=production
+FLASK_DEBUG=False
+PORT=5001
+
+# AWS Configuration
+AWS_DEFAULT_REGION=us-east-2
+S3_BUCKET_NAME=thakii-video-storage-1753883631
+
+# Firebase Configuration (CORRECT PROJECT)
+GOOGLE_CLOUD_PROJECT=${{ env.FIREBASE_PROJECT_ID }}
+FIREBASE_PROJECT_ID=${{ env.FIREBASE_PROJECT_ID }}
+
+# CORS Configuration (SPECIFIC ORIGIN)
+ALLOWED_ORIGINS=${{ env.ALLOWED_ORIGINS }}
+ENVEOF
+          
+          echo "🔥 Step 7: Start Flask backend..."
+          source venv/bin/activate
+          export $(cat .env | grep -v '^#' | xargs)
+          
+          # Kill any processes on port 5001
+          sudo lsof -ti:5001 | xargs sudo kill -9 2>/dev/null || true
+          sleep 3
+          
+          # Start backend with correct configuration
+          mkdir -p logs
+          echo "Starting backend with Firebase project: ${{ env.FIREBASE_PROJECT_ID }}"
+          ALLOWED_ORIGINS='${{ env.ALLOWED_ORIGINS }}' \
+          GOOGLE_CLOUD_PROJECT='${{ env.FIREBASE_PROJECT_ID }}' \
+          FIREBASE_PROJECT_ID='${{ env.FIREBASE_PROJECT_ID }}' \
+          nohup python3 app.py > logs/backend-deploy.log 2>&1 &
+          
+          BACKEND_PID=$!
+          echo $BACKEND_PID > backend.pid
+          echo "✅ Backend started with PID: $BACKEND_PID"
+          
+          echo "⏳ Waiting 15 seconds for initialization..."
+          sleep 15
+          
+          echo "🏥 Step 8: Test backend health..."
+          LOCAL_HEALTH=$(curl -s http://127.0.0.1:5001/health || echo "FAILED")
+          echo "Local health: $LOCAL_HEALTH"
+          
+          EXTERNAL_HEALTH=$(curl -s https://${{ inputs.server }}/health || echo "FAILED")
+          echo "External health: $EXTERNAL_HEALTH"
+          
+          echo "🧪 Step 9: Test CORS configuration..."
+          CORS_RESPONSE=$(curl -s -H "Origin: ${{ env.ALLOWED_ORIGINS }}" \
+                               -H "Access-Control-Request-Method: GET" \
+                               -X OPTIONS \
+                               https://${{ inputs.server }}/health -v 2>&1)
+          
+          echo "CORS headers:"
+          echo "$CORS_RESPONSE" | grep -i "access-control" || echo "No CORS headers found"
+          
+          # Check for duplicate CORS headers
+          CORS_COUNT=$(echo "$CORS_RESPONSE" | grep -i "access-control-allow-origin" | wc -l)
+          if [ "$CORS_COUNT" -gt 1 ]; then
+              echo "❌ CRITICAL: Still have duplicate CORS headers!"
+              exit 1
+          else
+              echo "✅ SUCCESS: Single CORS header confirmed!"
+          fi
+          
+          echo "🔐 Step 10: Test authentication..."
+          API_RESPONSE=$(curl -s https://${{ inputs.server }}/list || echo "FAILED")
+          echo "API response: $API_RESPONSE"
+          
+          if echo "$API_RESPONSE" | grep -q "Authentication required"; then
+              echo "✅ SUCCESS: Authentication working correctly!"
+          else
+              echo "❌ Authentication test inconclusive"
+          fi
+          
+          echo "✅ Backend deployment completed successfully!"
+          
+SSHEOF
+
+      - name: Deployment Summary
+        run: |
+          echo "🎉 Backend Deployment Completed!"
+          echo "📍 Server: ${{ inputs.server }}"
+          echo "🔥 Firebase Project: ${{ env.FIREBASE_PROJECT_ID }}"
+          echo "🌐 CORS Origin: ${{ env.ALLOWED_ORIGINS }}"
+          echo "🌐 Backend URL: https://${{ inputs.server }}"
+          echo "❤️ Health Check: https://${{ inputs.server }}/health"
+          echo ""
+          echo "🧪 Test the frontend now at: https://thakii-frontend.netlify.app"
+          echo "Expected: No more CORS errors or authentication failures!"

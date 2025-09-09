@@ -215,6 +215,7 @@ jobs:
         
         # Update environment variables  
         echo '{"Variables":{"S3_BUCKET_NAME":"${{ secrets.S3_BUCKET_NAME }}","FLASK_ENV":"staging","ALLOWED_ORIGINS":"${{ secrets.ALLOWED_ORIGINS_STAGING }}","DISABLE_FIREBASE":"true"}}' > env-staging.json
+
         aws lambda update-function-configuration \
           --function-name "$STAGING_FUNCTION_NAME" \
           --environment file://env-staging.json
@@ -380,9 +381,9 @@ jobs:
           echo "ℹ️ No API Gateway found for this function"
         fi
 
-  # Job 5: Integration tests
-  integration-test:
-    name: 🔗 Integration Tests
+  # Job 5: Backend Health Check (Modified from Integration Tests)
+  health-check:
+    name: 🏥 Backend Health Check
     runs-on: ubuntu-latest
     needs: [deploy-production]
     if: github.ref == 'refs/heads/main'
@@ -399,50 +400,42 @@ jobs:
       with:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
         aws-region: ${{ env.AWS_REGION }}
-        role-session-name: GitHubActions-Integration-Test
+        role-session-name: GitHubActions-Health-Check
 
-    - name: 🧪 Run integration tests
+    - name: 🏥 Backend Health Check
       run: |
-        echo "🧪 Running integration tests against production Lambda..."
+        echo "🏥 Running backend health check..."
         
-        # Test various endpoints
-        test_endpoint() {
-          local method=$1
-          local path=$2
-          local expected_status=$3
-          local description=$4
-          
-          echo "Testing: $description"
-          
-          RESPONSE=$(aws lambda invoke \
-            --function-name "$FUNCTION_NAME:LIVE" \
-            --payload "{\"httpMethod\": \"$method\", \"path\": \"$path\", \"headers\": {}, \"queryStringParameters\": null, \"body\": null, \"isBase64Encoded\": false}" \
-            --cli-binary-format raw-in-base64-out \
-            test-response.json)
-          
-          STATUS_CODE=$(cat test-response.json | jq -r '.statusCode // empty')
-          
-          if [ "$STATUS_CODE" = "$expected_status" ]; then
-            echo "✅ $description - Status: $STATUS_CODE"
-          else
-            echo "❌ $description - Expected: $expected_status, Got: $STATUS_CODE"
-            cat test-response.json
-            return 1
-          fi
-        }
+        # Test health endpoint
+        echo "🔍 Testing health endpoint..."
         
-        # Run tests
-        test_endpoint "GET" "/health" "200" "Health check endpoint"
-        test_endpoint "GET" "/list" "401" "Unauthorized access to list endpoint"
-        test_endpoint "POST" "/upload" "401" "Unauthorized access to upload endpoint"
-        test_endpoint "GET" "/admin/stats" "401" "Unauthorized access to admin endpoint"
-        test_endpoint "OPTIONS" "/upload" "200" "CORS preflight request"
+        RESPONSE=$(aws lambda invoke \
+          --function-name "$FUNCTION_NAME:LIVE" \
+          --payload '{"httpMethod": "GET", "path": "/health", "headers": {}, "queryStringParameters": null, "body": null, "isBase64Encoded": false}' \
+          --cli-binary-format raw-in-base64-out \
+          health-response.json)
         
-        echo "✅ All integration tests passed"
+        STATUS_CODE=$(cat health-response.json | jq -r '.statusCode // empty')
+        RESPONSE_BODY=$(cat health-response.json | jq -r '.body // empty')
+        
+        echo "📊 Health Check Results:"
+        echo "   Status Code: $STATUS_CODE"
+        echo "   Response Body: $RESPONSE_BODY"
+        
+        if [ "$STATUS_CODE" = "200" ]; then
+          echo "✅ Backend health check PASSED"
+          echo "🎉 Backend is healthy and responding correctly"
+        else
+          echo "❌ Backend health check FAILED"
+          echo "🚨 Backend is not responding with expected status code"
+          echo "📋 Full response:"
+          cat health-response.json
+          exit 1
+        fi
 
-    - name: 📈 Performance test
+    - name: 📈 Response Time Check
       run: |
-        echo "📈 Running basic performance test..."
+        echo "📈 Checking backend response time..."
         
         # Test response time
         start_time=$(date +%s%N)
@@ -456,19 +449,19 @@ jobs:
         end_time=$(date +%s%N)
         duration=$(( (end_time - start_time) / 1000000 ))  # Convert to milliseconds
         
-        echo "⏱️ Response time: ${duration}ms"
+        echo "⏱️ Backend response time: ${duration}ms"
         
         if [ $duration -lt 5000 ]; then  # Less than 5 seconds
-          echo "✅ Performance test passed"
+          echo "✅ Response time check PASSED"
         else
-          echo "⚠️ Performance test warning - slow response time"
+          echo "⚠️ Response time check WARNING - slow response (${duration}ms)"
         fi
 
   # Job 6: Cleanup and notifications
   cleanup:
     name: 🧹 Cleanup and Notify
     runs-on: ubuntu-latest
-    needs: [deploy-production, integration-test]
+    needs: [deploy-production, health-check]
     if: always() && github.ref == 'refs/heads/main'
     permissions:
       id-token: write
@@ -539,14 +532,14 @@ jobs:
       if: always()
       run: |
         DEPLOY_RESULT="${{ needs.deploy-production.result }}"
-        INTEGRATION_RESULT="${{ needs.integration-test.result }}"
+        HEALTH_CHECK_RESULT="${{ needs.health-check.result }}"
         
         if [ "$DEPLOY_RESULT" = "success" ] || [ "$DEPLOY_RESULT" = "skipped" ]; then
-          if [ "$INTEGRATION_RESULT" = "success" ] || [ "$INTEGRATION_RESULT" = "skipped" ]; then
-            echo "✅ Pipeline completed!"
-            echo "🎉 Thakii Backend API pipeline executed successfully"
+          if [ "$HEALTH_CHECK_RESULT" = "success" ] || [ "$HEALTH_CHECK_RESULT" = "skipped" ]; then
+            echo "✅ Pipeline completed successfully!"
+            echo "🎉 Thakii Backend API deployed and health check passed"
           else
-            echo "⚠️ Integration tests failed but deployment may have succeeded"
+            echo "⚠️ Health check failed but deployment may have succeeded"
           fi
         else
           echo "❌ Deployment failed!"

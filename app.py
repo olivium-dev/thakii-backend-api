@@ -104,51 +104,6 @@ def exchange_firebase_token():
             "message": str(e)
         }), 500
 
-@app.route("/auth/test-token", methods=["POST"])
-def generate_test_token():
-    """
-    TEMPORARY: Generate a test custom token for testing purposes
-    This bypasses Firebase verification and creates a token with test data
-    """
-    try:
-        # Create test user data (simulating what we'd get from Firebase)
-        test_user_data = {
-            'uid': 'test-user-id',
-            'user_id': 'test-user-id',
-            'email': 'ouday.khaled@gmail.com',
-            'name': 'Ouday Khaled',
-            'picture': 'https://lh3.googleusercontent.com/a/ACg8ocJYb5N2RvCoyZBVZuw9iKRedbebJbR_Q31miA_FwYcicPf7zwnY=s96-c',
-            'email_verified': True,
-            'firebase': {
-                'sign_in_provider': 'google.com'
-            },
-            'auth_time': 1757445500
-        }
-        
-        # Generate custom token
-        custom_token = custom_token_manager.generate_custom_token(test_user_data)
-        
-        return jsonify({
-            "success": True,
-            "message": "Test token generated successfully",
-            "custom_token": custom_token,
-            "expires_in_hours": 72,
-            "user": {
-                'uid': test_user_data['uid'],
-                'email': test_user_data['email'],
-                'name': test_user_data['name'],
-                'picture': test_user_data['picture'],
-                'is_admin': True
-            },
-            "token_type": "custom_backend",
-            "note": "This is a test token for development purposes"
-        }), 200
-        
-    except Exception as e:
-        return jsonify({
-            "error": "Test token generation failed",
-            "message": str(e)
-        }), 500
 
 @app.route("/auth/user", methods=["GET"])
 @require_auth

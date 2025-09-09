@@ -94,17 +94,13 @@ def verify_auth_token():
             return None, "Invalid Authorization header format"
 
         # Check if it's a custom backend token first
-        print(f"DEBUG: Checking if token is custom...")
         if custom_token_manager.is_custom_token(token):
-            print(f"DEBUG: Token identified as custom, verifying...")
             try:
                 decoded_token = custom_token_manager.verify_custom_token(token)
                 # Add token type for downstream processing
                 decoded_token['_token_type'] = 'custom'
-                print(f"DEBUG: Custom token verified successfully")
                 return decoded_token, None
             except Exception as custom_err:
-                print(f"DEBUG: Custom token verification failed: {str(custom_err)}")
                 return None, f"Custom token verification failed: {str(custom_err)}"
 
         # If not custom token, try Firebase verification

@@ -72,10 +72,7 @@ class CustomTokenManager:
         }
         
         # Generate JWT token
-        print(f"DEBUG: Generating token with secret: {CUSTOM_TOKEN_SECRET[:10]}...")
-        print(f"DEBUG: Payload: {payload}")
         token = jwt.encode(payload, CUSTOM_TOKEN_SECRET, algorithm=CUSTOM_TOKEN_ALGORITHM)
-        print(f"DEBUG: Generated token: {token[:50]}...")
         return token
     
     @staticmethod
@@ -93,10 +90,6 @@ class CustomTokenManager:
             jwt.InvalidTokenError: If token is invalid
         """
         try:
-            # Debug: Print token details
-            print(f"DEBUG: Verifying token with secret: {CUSTOM_TOKEN_SECRET[:10]}...")
-            print(f"DEBUG: Token: {token[:50]}...")
-            
             payload = jwt.decode(
                 token,
                 CUSTOM_TOKEN_SECRET,
@@ -115,20 +108,15 @@ class CustomTokenManager:
             if payload.get('token_type') != 'custom_backend':
                 raise jwt.InvalidTokenError('Invalid token type')
             
-            print(f"DEBUG: Token verified successfully for user: {payload.get('email')}")
             return payload
             
         except jwt.ExpiredSignatureError:
-            print("DEBUG: Token has expired")
             raise jwt.InvalidTokenError('Token has expired')
         except jwt.InvalidAudienceError:
-            print("DEBUG: Invalid token audience")
             raise jwt.InvalidTokenError('Invalid token audience')
         except jwt.InvalidIssuerError:
-            print("DEBUG: Invalid token issuer")
             raise jwt.InvalidTokenError('Invalid token issuer')
         except Exception as e:
-            print(f"DEBUG: Token verification error: {str(e)}")
             raise jwt.InvalidTokenError(f'Token verification failed: {str(e)}')
     
     @staticmethod
@@ -147,11 +135,8 @@ class CustomTokenManager:
             unverified = jwt.decode(token, options={"verify_signature": False})
             token_type = unverified.get('token_type')
             issuer = unverified.get('iss')
-            is_custom = token_type == 'custom_backend' and issuer == CUSTOM_TOKEN_ISSUER
-            print(f"DEBUG: is_custom_token - token_type: {token_type}, issuer: {issuer}, is_custom: {is_custom}")
-            return is_custom
-        except Exception as e:
-            print(f"DEBUG: is_custom_token error: {str(e)}")
+            return token_type == 'custom_backend' and issuer == CUSTOM_TOKEN_ISSUER
+        except:
             return False
     
     @staticmethod

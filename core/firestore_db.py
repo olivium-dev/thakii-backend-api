@@ -106,6 +106,9 @@ class FirestoreDB:
     
     def get_all_video_tasks(self) -> List[Dict[str, Any]]:
         """Get all video tasks ordered by creation date (admin only)"""
+        if not self._is_available():
+            return []
+            
         docs = self.db.collection(self.collection_name).order_by('created_at', direction=firestore.Query.DESCENDING).stream()
         
         tasks = []
@@ -118,6 +121,9 @@ class FirestoreDB:
     
     def get_user_video_tasks(self, user_id: str) -> List[Dict[str, Any]]:
         """Get video tasks for a specific user ordered by creation date"""
+        if not self._is_available():
+            return []
+            
         docs = self.db.collection(self.collection_name).where('user_id', '==', user_id).order_by('created_at', direction=firestore.Query.DESCENDING).stream()
         
         tasks = []

@@ -1,0 +1,113 @@
+name: Fix Firebase Authentication on Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+        - production
+        - staging
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/fix-firebase-auth.yml'
+
+jobs:
+  fix-firebase-auth:
+    name: 🔥 Fix Firebase Authentication
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup SSH
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H thakii-02.fanusdigital.site >> ~/.ssh/known_hosts
+        
+    - name: 🔄 Stop existing backend
+      run: |
+        ssh -o ProxyCommand="cloudflared access ssh --hostname %h" ec2-user@vps-71.fds-1.com \
+        "cd thakii-backend-api && pkill -f 'python3 app.py' || true && sleep 3"
+        
+    - name: 📥 Update backend code
+      run: |
+        ssh -o ProxyCommand="cloudflared access ssh --hostname %h" ec2-user@vps-71.fds-1.com \
+        "cd thakii-backend-api && git fetch origin && git reset --hard origin/main && git pull origin main"
+        
+    - name: 🔧 Configure Firebase environment
+      run: |
+        ssh -o ProxyCommand="cloudflared access ssh --hostname %h" ec2-user@vps-71.fds-1.com \
+        'cd thakii-backend-api && cat > .env << "EOF"
+        # Flask Configuration
+        FLASK_ENV=production
+        FLASK_DEBUG=False
+        PORT=5001
+        
+        # AWS Configuration
+        AWS_DEFAULT_REGION=us-east-2
+        S3_BUCKET_NAME=thakii-video-storage-1753883631
+        
+        # Firebase Configuration (ENABLED)
+        GOOGLE_CLOUD_PROJECT=thakii-973e3
+        FIREBASE_PROJECT_ID=thakii-973e3
+        
+        # CORS Configuration
+        ALLOWED_ORIGINS=https://thakii-frontend.netlify.app
+        EOF'
+        
+    - name: 🐍 Setup Python environment
+      run: |
+        ssh -o ProxyCommand="cloudflared access ssh --hostname %h" ec2-user@vps-71.fds-1.com \
+        "cd thakii-backend-api && source venv/bin/activate && pip install -r requirements.txt"
+        
+    - name: 🚀 Start backend with Firebase
+      run: |
+        ssh -o ProxyCommand="cloudflared access ssh --hostname %h" ec2-user@vps-71.fds-1.com \
+        "cd thakii-backend-api && source venv/bin/activate && source .env && \
+        GOOGLE_CLOUD_PROJECT=thakii-973e3 FIREBASE_PROJECT_ID=thakii-973e3 \
+        nohup python3 app.py > logs/backend-firebase-fix.log 2>&1 & echo \$! > backend.pid"
+        
+    - name: ⏳ Wait for backend startup
+      run: sleep 15
+      
+    - name: 🏥 Test backend health
+      run: |
+        ssh -o ProxyCommand="cloudflared access ssh --hostname %h" ec2-user@vps-71.fds-1.com \
+        "curl -f http://127.0.0.1:5001/health || (echo 'Health check failed' && exit 1)"
+        
+    - name: 🔐 Test Firebase authentication
+      run: |
+        ssh -o ProxyCommand="cloudflared access ssh --hostname %h" ec2-user@vps-71.fds-1.com \
+        'RESPONSE=$(curl -s -H "Authorization: Bearer invalid-token" http://127.0.0.1:5001/list)
+        echo "Auth test response: $RESPONSE"
+        if echo "$RESPONSE" | grep -q "GOOGLE_CLOUD_PROJECT"; then
+          echo "❌ CRITICAL: Still getting GOOGLE_CLOUD_PROJECT error!"
+          exit 1
+        else
+          echo "✅ SUCCESS: Firebase authentication is working properly!"
+        fi'
+        
+    - name: 🌐 Test external endpoint
+      run: |
+        RESPONSE=$(curl -s https://thakii-02.fanusdigital.site/health)
+        echo "External health response: $RESPONSE"
+        if echo "$RESPONSE" | grep -q "healthy"; then
+          echo "✅ External endpoint is working!"
+        else
+          echo "❌ External endpoint failed"
+          exit 1
+        fi
+        
+    - name: 📋 Show backend logs
+      if: always()
+      run: |
+        ssh -o ProxyCommand="cloudflared access ssh --hostname %h" ec2-user@vps-71.fds-1.com \
+        "cd thakii-backend-api && tail -20 logs/backend-firebase-fix.log || echo 'No logs available'"

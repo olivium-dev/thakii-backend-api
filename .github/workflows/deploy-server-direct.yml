@@ -58,6 +58,16 @@ jobs:
         
         # CORS Configuration
         ALLOWED_ORIGINS=https://thakii-frontend.netlify.app
+        
+        # Mock Authentication for E2E Testing
+        STATIC_BEARER_TOKEN=thakii-mock-prod-token
+        STATIC_BEARER_EMAIL=mock.admin@thakii.test
+        STATIC_BEARER_NAME=Mock Admin User
+        STATIC_BEARER_UID=static-mock-admin
+        STATIC_BEARER_IS_ADMIN=true
+        
+        # Custom Token Configuration
+        CUSTOM_TOKEN_SECRET=thakii-custom-secret-key-2025
         ENVEOF
         
         echo "🚀 Starting backend..."

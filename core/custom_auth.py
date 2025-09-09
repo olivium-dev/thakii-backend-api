@@ -225,5 +225,51 @@ class CustomTokenManager:
         except Exception:
             return False
 
+    @staticmethod
+    def generate_static_mock_token() -> str:
+        """
+        Generate a deterministic, long-lived mock token for production testing.
+        Controlled by environment variables:
+          - STATIC_MOCK_EMAIL (default mock.admin@thakii.test)
+          - STATIC_MOCK_NAME (default Mock Admin User)
+          - STATIC_MOCK_IS_ADMIN (default true)
+          - STATIC_MOCK_UID (default mock-admin-user-id)
+          - STATIC_MOCK_PICTURE (default placeholder)
+          - STATIC_MOCK_EXP (unix ts, default 1999999999)
+          - STATIC_MOCK_IAT (unix ts, default 1700000000)
+        """
+        email = os.getenv('STATIC_MOCK_EMAIL', 'mock.admin@thakii.test')
+        name = os.getenv('STATIC_MOCK_NAME', 'Mock Admin User')
+        is_admin_env = os.getenv('STATIC_MOCK_IS_ADMIN', 'true').lower()
+        is_admin = is_admin_env in ('1', 'true', 'yes')
+        uid = os.getenv('STATIC_MOCK_UID', 'mock-admin-user-id')
+        picture = os.getenv('STATIC_MOCK_PICTURE', 'https://via.placeholder.com/96x96/4F46E5/FFFFFF?text=MA')
+        exp = int(os.getenv('STATIC_MOCK_EXP', '1999999999'))
+        iat = int(os.getenv('STATIC_MOCK_IAT', '1700000000'))
+
+        payload = {
+            'iss': CUSTOM_TOKEN_ISSUER,
+            'aud': CUSTOM_TOKEN_AUDIENCE,
+            'iat': iat,
+            'exp': exp,
+            'nbf': iat,
+            'user_id': uid,
+            'email': email,
+            'name': name,
+            'picture': picture,
+            'email_verified': True,
+            'token_type': 'custom_backend',
+            'token_version': '1.0',
+            'is_admin': is_admin,
+            'firebase_provider': 'mock',
+            'auth_time': iat,
+            'token_hash': hashlib.sha256(f"static:{uid}:{email}".encode()).hexdigest()[:16],
+            'mock': True,
+            'mock_user_type': 'admin' if is_admin else 'user',
+            'mock_static': True,
+        }
+
+        return jwt.encode(payload, CUSTOM_TOKEN_SECRET, algorithm=CUSTOM_TOKEN_ALGORITHM)
+
 # Singleton instance
 custom_token_manager = CustomTokenManager()

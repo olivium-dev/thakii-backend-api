@@ -91,6 +91,20 @@ if os.getenv('ENABLE_MOCK_AUTH', '').lower() == 'true':
         except Exception as e:
             return jsonify({"error": "Mock token generation failed", "message": str(e)}), 500
 
+    @app.route("/auth/mock-static-token", methods=["GET"])
+    def get_static_mock_token():
+        """Return a single, stable mock token for production testing."""
+        try:
+            token = custom_token_manager.generate_static_mock_token()
+            return jsonify({
+                "success": True,
+                "custom_token": token,
+                "token_type": "custom_backend",
+                "note": "Static mock token enabled"
+            })
+        except Exception as e:
+            return jsonify({"error": "Static mock token generation failed", "message": str(e)}), 500
+
 @app.route("/auth/exchange-token", methods=["POST"])
 def exchange_firebase_token():
     """

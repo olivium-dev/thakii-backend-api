@@ -79,6 +79,26 @@ def _verify_with_jwks(token: str):
     )
     return decoded
 
+def _verify_with_x509(token: str):
+    """Secondary verification using Google's x509 certs (public cert rotation)."""
+    project_id = _get_firebase_project_id()
+    # Google provides certs at this endpoint
+    certs = requests.get('https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com', timeout=10).json()
+    headers = jwt.get_unverified_header(token)
+    kid = headers.get('kid')
+    if not kid or kid not in certs:
+        raise ValueError('x509 cert for kid not found')
+    cert_pem = certs[kid]
+    issuer = f"https://securetoken.google.com/{project_id}"
+    return jwt.decode(
+        token,
+        cert_pem,
+        algorithms=['RS256'],
+        audience=project_id,
+        issuer=issuer,
+        options={'verify_exp': True}
+    )
+
 def verify_auth_token():
     """Verify authentication token (Firebase or Custom) from Authorization header"""
     auth_header = request.headers.get('Authorization')
@@ -117,10 +137,19 @@ def verify_auth_token():
                 decoded_token['_token_type'] = 'firebase'
                 return decoded_token, None
             except Exception as fallback_err:
-                return None, f"Firebase token verification failed: {str(fallback_err)}"
+                # Last resort: x509 certs
+                try:
+                    decoded_token = _verify_with_x509(token)
+                    decoded_token['_token_type'] = 'firebase'
+                    return decoded_token, None
+                except Exception as x509_err:
+                    return None, f"Firebase token verification failed: {str(x509_err)}"
 
         # If no Firebase app is initialized, use JWKS fallback
-        decoded_token = _verify_with_jwks(token)
+        try:
+            decoded_token = _verify_with_jwks(token)
+        except Exception:
+            decoded_token = _verify_with_x509(token)
         decoded_token['_token_type'] = 'firebase'
         return decoded_token, None
     except Exception as e:

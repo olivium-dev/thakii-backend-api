@@ -47,6 +47,50 @@ def health_check():
         "timestamp": datetime.datetime.now().isoformat()
     })
 
+# Optional mock auth endpoints, controlled by env flag ENABLE_MOCK_AUTH=true
+if os.getenv('ENABLE_MOCK_AUTH', '').lower() == 'true':
+    @app.route("/auth/mock-admin-token", methods=["POST"])
+    def generate_mock_admin_token():
+        try:
+            token = custom_token_manager.generate_mock_token('admin')
+            return jsonify({
+                "success": True,
+                "custom_token": token,
+                "expires_in_hours": 72,
+                "user": {
+                    'uid': 'mock-admin-user-id',
+                    'email': 'mock.admin@thakii.test',
+                    'name': 'Mock Admin User',
+                    'picture': 'https://via.placeholder.com/96x96/4F46E5/FFFFFF?text=MA',
+                    'is_admin': True,
+                    'mock': True
+                },
+                "token_type": "custom_backend"
+            })
+        except Exception as e:
+            return jsonify({"error": "Mock token generation failed", "message": str(e)}), 500
+
+    @app.route("/auth/mock-user-token", methods=["POST"])
+    def generate_mock_user_token():
+        try:
+            token = custom_token_manager.generate_mock_token('user')
+            return jsonify({
+                "success": True,
+                "custom_token": token,
+                "expires_in_hours": 72,
+                "user": {
+                    'uid': 'mock-regular-user-id',
+                    'email': 'mock.user@thakii.test',
+                    'name': 'Mock Regular User',
+                    'picture': 'https://via.placeholder.com/96x96/10B981/FFFFFF?text=MU',
+                    'is_admin': False,
+                    'mock': True
+                },
+                "token_type": "custom_backend"
+            })
+        except Exception as e:
+            return jsonify({"error": "Mock token generation failed", "message": str(e)}), 500
+
 @app.route("/auth/exchange-token", methods=["POST"])
 def exchange_firebase_token():
     """

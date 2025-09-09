@@ -163,5 +163,67 @@ class CustomTokenManager:
             'token_issued_at': payload.get('iat')
         }
 
+    @staticmethod
+    def generate_mock_token(user_type: str = 'admin') -> str:
+        """
+        Generate a mock custom token (admin or user) for testing.
+        """
+        now = datetime.utcnow()
+        expiry = now + timedelta(hours=CUSTOM_TOKEN_EXPIRY_HOURS)
+
+        mock_profiles = {
+            'admin': {
+                'user_id': 'mock-admin-user-id',
+                'email': 'mock.admin@thakii.test',
+                'name': 'Mock Admin User',
+                'picture': 'https://via.placeholder.com/96x96/4F46E5/FFFFFF?text=MA',
+                'email_verified': True,
+                'is_admin': True,
+                'firebase_provider': 'mock',
+            },
+            'user': {
+                'user_id': 'mock-regular-user-id',
+                'email': 'mock.user@thakii.test',
+                'name': 'Mock Regular User',
+                'picture': 'https://via.placeholder.com/96x96/10B981/FFFFFF?text=MU',
+                'email_verified': True,
+                'is_admin': False,
+                'firebase_provider': 'mock',
+            }
+        }
+
+        profile = mock_profiles.get(user_type, mock_profiles['user'])
+
+        payload = {
+            'iss': CUSTOM_TOKEN_ISSUER,
+            'aud': CUSTOM_TOKEN_AUDIENCE,
+            'iat': int(now.timestamp()),
+            'exp': int(expiry.timestamp()),
+            'nbf': int(now.timestamp()),
+            'user_id': profile['user_id'],
+            'email': profile['email'],
+            'name': profile['name'],
+            'picture': profile['picture'],
+            'email_verified': profile['email_verified'],
+            'token_type': 'custom_backend',
+            'token_version': '1.0',
+            'is_admin': profile['is_admin'],
+            'firebase_provider': profile['firebase_provider'],
+            'auth_time': int(now.timestamp()),
+            'token_hash': hashlib.sha256(f"mock:{user_type}:{int(now.timestamp())}".encode()).hexdigest()[:16],
+            'mock': True,
+            'mock_user_type': user_type,
+        }
+
+        return jwt.encode(payload, CUSTOM_TOKEN_SECRET, algorithm=CUSTOM_TOKEN_ALGORITHM)
+
+    @staticmethod
+    def is_mock_token(token: str) -> bool:
+        try:
+            unverified = jwt.decode(token, options={"verify_signature": False})
+            return bool(unverified.get('mock'))
+        except Exception:
+            return False
+
 # Singleton instance
 custom_token_manager = CustomTokenManager()

@@ -102,7 +102,10 @@ def list_videos():
             tasks = firestore_db.get_all_video_tasks()
         else:
             tasks = firestore_db.get_user_video_tasks(current_user['uid'])
-        
+        # Gracefully handle unavailable Firestore (None) or no tasks
+        if not tasks:
+            return jsonify([])
+
         # Convert tasks to the expected format
         video_list = []
         for task in tasks:
@@ -192,7 +195,10 @@ def admin_get_all_videos():
     """Admin endpoint to get all videos from all users"""
     try:
         tasks = firestore_db.get_all_video_tasks()
-        
+        # Gracefully handle unavailable Firestore (None) or no tasks
+        if not tasks:
+            return jsonify([])
+
         # Convert tasks to the expected format
         video_list = []
         for task in tasks:

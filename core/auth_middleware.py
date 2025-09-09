@@ -119,8 +119,10 @@ def require_auth(f):
             return jsonify({"error": "Authentication required", "message": error}), 401
         
         # Store user information in Flask's g object for use in the request
+        # Handle both Firebase Admin SDK format (uid) and JWKS format (user_id/sub)
+        uid = token_data.get('uid') or token_data.get('user_id') or token_data.get('sub')
         g.current_user = {
-            'uid': token_data['uid'],
+            'uid': uid,
             'email': token_data.get('email'),
             'email_verified': token_data.get('email_verified', False)
         }
@@ -144,8 +146,10 @@ def require_admin(f):
             return jsonify({"error": "Admin access required", "message": "Insufficient privileges"}), 403
         
         # Store user information in Flask's g object
+        # Handle both Firebase Admin SDK format (uid) and JWKS format (user_id/sub)
+        uid = token_data.get('uid') or token_data.get('user_id') or token_data.get('sub')
         g.current_user = {
-            'uid': token_data['uid'],
+            'uid': uid,
             'email': user_email,
             'email_verified': token_data.get('email_verified', False),
             'is_admin': True

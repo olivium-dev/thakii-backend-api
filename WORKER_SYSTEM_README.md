@@ -17,6 +17,7 @@ This document describes the complete implementation of the Thakii video processi
 - Clean process lifecycle: spawn → process → exit
 - Uses `sys.executable` to ensure correct Python interpreter (venv)
 - Single worker per video, no conflicts
+- **NO AUTHENTICATION**: Worker operates as internal service with direct DB/S3 access
 
 ## 📁 Key Files Modified
 
@@ -167,10 +168,11 @@ curl -H "Authorization: Bearer mock_token_12345" /admin/videos | jq '.[] | selec
 
 ### **❓ POTENTIAL ISSUES (Needs Investigation)**
 
-#### **1. Authentication Token Validation**
-- **Issue**: Mock token `mock_token_12345` returns "Not enough segments" error
-- **Impact**: Cannot test APIs without valid authentication
-- **Next Step**: Verify STATIC_BEARER_TOKEN environment variable on server
+#### **1. Worker Authentication Architecture** ✅ CORRECT
+- **Design**: Worker has NO authentication - operates as internal service
+- **Rationale**: Worker directly accesses Firestore/S3, doesn't use HTTP APIs
+- **Security**: Worker inherits backend's service account permissions
+- **Status**: ✅ WORKING AS DESIGNED
 
 #### **2. Deployment Synchronization**
 - **Issue**: Server may not have latest code despite successful GitHub Actions
@@ -191,18 +193,18 @@ curl -H "Authorization: Bearer mock_token_12345" /admin/videos | jq '.[] | selec
 
 ```mermaid
 graph TD
-    A[Video Upload] --> B[Create Firestore Task]
+    A[Video Upload API] --> B[Create Firestore Task]
     B --> C[Upload to S3]
     C --> D[Trigger Worker via subprocess.Popen]
-    D --> E[Worker: Update status to 'processing']
-    E --> F[Download video from S3]
+    D --> E[Worker: Direct Firestore Access - Update status to 'processing']
+    E --> F[Worker: Direct S3 Access - Download video]
     F --> G[Generate subtitles with moviepy/whisper]
     G --> H[Generate PDF with lecture2pdf]
-    H --> I[Upload PDF to S3]
-    I --> J[Upload subtitles to S3]
-    J --> K[Update status to 'completed']
+    H --> I[Worker: Direct S3 Access - Upload PDF]
+    I --> J[Worker: Direct S3 Access - Upload subtitles]
+    J --> K[Worker: Direct Firestore Access - Update status to 'completed']
     K --> L[Cleanup temp files]
-    L --> M[Worker exits]
+    L --> M[Worker exits - NO AUTH NEEDED]
 ```
 
 ## 🎯 Success Criteria

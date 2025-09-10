@@ -239,17 +239,27 @@ def upload_video():
         )
         print(f"Task created in Firestore: {video_id} for user: {current_user['email']}")
 
-        # Trigger worker to process the video using the same interpreter
-        import subprocess, sys
-        try:
-            subprocess.Popen([
-                sys.executable or "python3",
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), "trigger_worker_clean.py"),
-                video_id
-            ], cwd=os.path.dirname(os.path.abspath(__file__)), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            print(f"Worker triggered for video: {video_id}")
-        except Exception as trigger_error:
-            print(f"Failed to trigger worker: {trigger_error}")
+        # Trigger worker processing
+        # In development: Use local trigger script
+        # In production: Call external worker service API
+        worker_service_url = os.getenv('WORKER_SERVICE_URL')
+        
+        if worker_service_url:
+            # Production: Call external worker service
+            try:
+                import requests
+                response = requests.post(f"{worker_service_url}/process", json={
+                    "video_id": video_id,
+                    "callback_url": f"{request.url_root}worker/callback/{video_id}"
+                }, timeout=10)
+                print(f"Worker service triggered for video: {video_id}, status: {response.status_code}")
+            except Exception as worker_error:
+                print(f"Failed to trigger worker service: {worker_error}")
+                # Fallback to local trigger for development
+                _trigger_local_worker(video_id)
+        else:
+            # Development: Use local trigger script
+            _trigger_local_worker(video_id)
 
         return jsonify({
             "video_id": video_id, 
@@ -260,6 +270,19 @@ def upload_video():
     except Exception as e:
         print(f"Error uploading video: {str(e)}")
         return jsonify({"error": f"Failed to upload video: {str(e)}"}), 500
+
+def _trigger_local_worker(video_id):
+    """Trigger local worker script for development/testing"""
+    import subprocess, sys
+    try:
+        subprocess.Popen([
+            sys.executable or "python3",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "trigger_worker_clean.py"),
+            video_id
+        ], cwd=os.path.dirname(os.path.abspath(__file__)), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"Local worker triggered for video: {video_id}")
+    except Exception as trigger_error:
+        print(f"Failed to trigger local worker: {trigger_error}")
 
 @app.route("/list", methods=["GET"])
 @require_auth

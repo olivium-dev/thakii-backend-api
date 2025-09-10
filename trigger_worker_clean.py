@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """
-Thakii Trigger-Based Worker (Repo Version)
-Processes a single video task when called by the backend
-Uses sys.executable to ensure correct interpreter (venv-safe)
+Thakii Backend API - Local Worker Trigger (Development/Testing Only)
+
+This script is for LOCAL DEVELOPMENT AND TESTING purposes only.
+In production, the backend API communicates with the separate worker service:
+https://github.com/olivium-dev/thakii-worker-service.git
+
+This local trigger allows testing the video processing pipeline without
+setting up the full distributed worker service.
 """
 
 import sys

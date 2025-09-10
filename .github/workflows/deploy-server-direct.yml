@@ -38,8 +38,9 @@ jobs:
         
         echo "🔧 Installing dependencies..."
         source venv/bin/activate
+        pip install --upgrade pip
         pip install -r requirements.txt
-        pip install PyJWT requests
+        pip install PyJWT requests moviepy imageio imageio-ffmpeg
         
         echo "🔧 Configuring environment..."
         cat > .env << 'ENVEOF'

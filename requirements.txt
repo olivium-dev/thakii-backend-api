@@ -9,3 +9,7 @@ PyJWT>=2.8.0
 boto3>=1.26.0
 # For Firestore integration
 firebase-admin>=6.0.0
+# For subtitle generation and video processing
+moviepy==1.0.3
+imageio==2.34.1
+imageio-ffmpeg==0.4.9

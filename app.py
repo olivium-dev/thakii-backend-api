@@ -379,6 +379,52 @@ def admin_get_all_videos():
         print(f"Error fetching admin video list: {str(e)}")
         return jsonify({"error": f"Failed to fetch videos: {str(e)}"}), 500
 
+@app.route("/admin/videos/<video_id>", methods=["DELETE"])
+@require_admin
+def admin_delete_video(video_id):
+    """Admin endpoint to delete a video and its associated files"""
+    try:
+        # Delete from Firestore
+        firestore_success = firestore_db.delete_video_task(video_id)
+        
+        # Delete from S3 (video, subtitles, PDF)
+        s3_deletions = []
+        try:
+            # Get video task to find filename
+            task = firestore_db.get_video_task(video_id)
+            if task and task.get('filename'):
+                filename = task['filename']
+                
+                # Delete video from S3
+                video_key = f"videos/{video_id}/{filename}"
+                s3_storage.s3_client.delete_object(Bucket=s3_storage.bucket_name, Key=video_key)
+                s3_deletions.append(f"video: {video_key}")
+            
+            # Delete subtitle from S3
+            subtitle_key = f"subtitles/{video_id}.srt"
+            s3_storage.s3_client.delete_object(Bucket=s3_storage.bucket_name, Key=subtitle_key)
+            s3_deletions.append(f"subtitle: {subtitle_key}")
+            
+            # Delete PDF from S3
+            pdf_key = f"pdfs/{video_id}.pdf"
+            s3_storage.s3_client.delete_object(Bucket=s3_storage.bucket_name, Key=pdf_key)
+            s3_deletions.append(f"pdf: {pdf_key}")
+            
+        except Exception as s3_error:
+            print(f"S3 deletion warning: {s3_error}")
+        
+        if firestore_success:
+            return jsonify({
+                "message": f"Video {video_id} deleted successfully",
+                "firestore": "deleted",
+                "s3_deletions": s3_deletions
+            })
+        else:
+            return jsonify({"error": "Video not found in Firestore"}), 404
+            
+    except Exception as e:
+        return jsonify({"error": f"Failed to delete video: {str(e)}"}), 500
+
 @app.route("/admin/stats", methods=["GET"])
 @require_admin
 def admin_get_stats():

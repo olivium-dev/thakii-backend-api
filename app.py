@@ -239,6 +239,18 @@ def upload_video():
         )
         print(f"Task created in Firestore: {video_id} for user: {current_user['email']}")
 
+        # Trigger worker to process the video using the same interpreter
+        import subprocess, sys
+        try:
+            subprocess.Popen([
+                sys.executable or "python3",
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "trigger_worker_clean.py"),
+                video_id
+            ], cwd=os.path.dirname(os.path.abspath(__file__)), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"Worker triggered for video: {video_id}")
+        except Exception as trigger_error:
+            print(f"Failed to trigger worker: {trigger_error}")
+
         return jsonify({
             "video_id": video_id, 
             "message": "Video uploaded to S3 and queued for processing",

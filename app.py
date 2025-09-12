@@ -374,7 +374,12 @@ def list_videos():
             tasks = firestore_db.get_user_video_tasks(current_user['uid'])
         # Gracefully handle unavailable Firestore (None) or no tasks
         if not tasks:
-            return jsonify([])
+            return jsonify({
+                "videos": [],
+                "total": 0,
+                "timestamp": datetime.datetime.now().isoformat(),
+                "message": "No videos found for this user"
+            })
 
         # Convert tasks to the expected format
         video_list = []

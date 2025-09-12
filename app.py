@@ -305,17 +305,32 @@ def list_videos():
             task_id = task.get("id") or task.get("video_id")
             video_list.append({
                 "id": task_id,
-                "video_name": task.get("filename"),
+                "video_id": task_id,  # For compatibility
+                "filename": task.get("filename"),  # Frontend expects 'filename'
+                "video_name": task.get("filename"),  # Backup field
                 "status": task.get("status"),
-                "date": task.get("created_at") or task.get("upload_date"),
-                "user_email": task.get("user_email")  # Include for admin view
+                "upload_date": task.get("created_at") or task.get("upload_date"),  # Frontend expects 'upload_date'
+                "date": task.get("created_at") or task.get("upload_date"),  # Backup field
+                "user_email": task.get("user_email"),  # Include for admin view
+                "created_at": task.get("created_at"),
+                "updated_at": task.get("updated_at")
             })
         
-        return jsonify(video_list)
+        return jsonify({
+            "videos": video_list,
+            "total": len(video_list),
+            "timestamp": datetime.datetime.now().isoformat()
+        })
     
     except Exception as e:
         print(f"Error fetching video list: {str(e)}")
-        return jsonify({"error": f"Failed to fetch videos: {str(e)}"}), 500
+        # Return empty list for better UX instead of error
+        return jsonify({
+            "videos": [],
+            "total": 0,
+            "error_message": f"Database temporarily unavailable: {str(e)}",
+            "timestamp": datetime.datetime.now().isoformat()
+        }), 200
 
 @app.route("/status/<video_id>", methods=["GET"])
 @require_auth

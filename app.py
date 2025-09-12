@@ -73,17 +73,33 @@ if os.getenv('ENABLE_MOCK_AUTH', '').lower() == 'true':
     @app.route("/auth/mock-user-token", methods=["POST"])
     def generate_mock_user_token():
         try:
-            token = custom_token_manager.generate_mock_token('user')
+            # Get user data from request
+            user_data = request.get_json() or {}
+            provided_email = user_data.get('email', 'mock.user@thakii.test')
+            provided_uid = user_data.get('uid', 'mock-regular-user-id')
+            
+            # Generate token with provided user data
+            custom_user_data = {
+                'uid': provided_uid,
+                'user_id': provided_uid,
+                'email': provided_email,
+                'name': user_data.get('name', provided_email.split('@')[0]),
+                'picture': user_data.get('picture', 'https://via.placeholder.com/96x96/10B981/FFFFFF?text=MU'),
+                'email_verified': True,
+                'mock': True
+            }
+            
+            token = custom_token_manager.generate_custom_token(custom_user_data)
             return jsonify({
                 "success": True,
                 "custom_token": token,
                 "expires_in_hours": 72,
                 "user": {
-                    'uid': 'mock-regular-user-id',
-                    'email': 'mock.user@thakii.test',
-                    'name': 'Mock Regular User',
-                    'picture': 'https://via.placeholder.com/96x96/10B981/FFFFFF?text=MU',
-                    'is_admin': False,
+                    'uid': provided_uid,
+                    'email': provided_email,
+                    'name': custom_user_data['name'],
+                    'picture': custom_user_data['picture'],
+                    'is_admin': provided_email in ['ouday.khaled@gmail.com', 'appsaawt@gmail.com'],
                     'mock': True
                 },
                 "token_type": "custom_backend"

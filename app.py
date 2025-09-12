@@ -239,17 +239,37 @@ def upload_video():
         )
         print(f"Task created in Firestore: {video_id} for user: {current_user['email']}")
 
-        # Trigger worker to process the video using the same interpreter
-        import subprocess, sys
+        # Trigger worker via HTTP API instead of subprocess
+        import requests
         try:
-            subprocess.Popen([
-                sys.executable or "python3",
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), "trigger_worker_clean.py"),
-                video_id
-            ], cwd=os.path.dirname(os.path.abspath(__file__)), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            print(f"Worker triggered for video: {video_id}")
+            worker_url = os.getenv('WORKER_SERVICE_URL', 'https://thakii-02.fanusdigital.site/thakii-worker')
+            
+            response = requests.post(
+                f"{worker_url}/generate-pdf",
+                json={
+                    "video_id": video_id,
+                    "user_id": current_user['uid'],
+                    "filename": filename,
+                    "s3_key": video_key
+                },
+                timeout=30
+            )
+            
+            if response.status_code == 201:
+                print(f"Worker triggered successfully via HTTP: {video_id}")
+            else:
+                print(f"Worker HTTP trigger failed: {response.status_code} - {response.text}")
+                
         except Exception as trigger_error:
-            print(f"Failed to trigger worker: {trigger_error}")
+            print(f"Failed to trigger worker via HTTP: {trigger_error}")
+            # Fallback: Update task status to failed
+            try:
+                firestore_db.update_video_task(video_id, {
+                    'status': 'failed',
+                    'error_message': f'Worker trigger failed: {str(trigger_error)}'
+                })
+            except:
+                pass
 
         return jsonify({
             "video_id": video_id, 

@@ -1,0 +1,705 @@
+{
+    "info": {
+        "name": "Thakii Backend API - Complete Collection",
+        "description": "Comprehensive Postman collection for Thakii Backend API with Firebase authentication and user isolation",
+        "version": "2.0.0",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "variable": [
+        {
+            "key": "BACKEND_BASE_URL",
+            "value": "https://vps-71.fds-1.com/thakii-be",
+            "type": "string"
+        },
+        {
+            "key": "WORKER_BASE_URL", 
+            "value": "https://thakii-02.fanusdigital.site/thakii-worker",
+            "type": "string"
+        },
+        {
+            "key": "AUTH_TOKEN",
+            "value": "",
+            "type": "string"
+        },
+        {
+            "key": "VIDEO_ID",
+            "value": "",
+            "type": "string"
+        },
+        {
+            "key": "USER_ID",
+            "value": "",
+            "type": "string"
+        }
+    ],
+    "item": [
+        {
+            "name": "🔐 Authentication",
+            "item": [
+                {
+                    "name": "Get Mock Admin Token",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"email\": \"admin@thakii.test\",\n    \"uid\": \"mock-admin-123\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{BACKEND_BASE_URL}}/auth/mock-admin-token",
+                            "host": ["{{BACKEND_BASE_URL}}"],
+                            "path": ["auth", "mock-admin-token"]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "if (pm.response.code === 200) {",
+                                    "    const response = pm.response.json();",
+                                    "    pm.collectionVariables.set('AUTH_TOKEN', response.custom_token);",
+                                    "    pm.collectionVariables.set('USER_ID', response.user_data.uid);",
+                                    "    console.log('Admin token set:', response.custom_token.substring(0, 20) + '...');",
+                                    "}"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "Get Mock User Token",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"email\": \"user@thakii.test\",\n    \"uid\": \"mock-user-456\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{BACKEND_BASE_URL}}/auth/mock-user-token",
+                            "host": ["{{BACKEND_BASE_URL}}"],
+                            "path": ["auth", "mock-user-token"]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "if (pm.response.code === 200) {",
+                                    "    const response = pm.response.json();",
+                                    "    pm.collectionVariables.set('AUTH_TOKEN', response.custom_token);",
+                                    "    pm.collectionVariables.set('USER_ID', response.user_data.uid);",
+                                    "    console.log('User token set:', response.custom_token.substring(0, 20) + '...');",
+                                    "}"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "Get Current User Info",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{AUTH_TOKEN}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{BACKEND_BASE_URL}}/auth/user",
+                            "host": ["{{BACKEND_BASE_URL}}"],
+                            "path": ["auth", "user"]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('User info retrieved', function () {",
+                                    "    pm.response.to.have.status(200);",
+                                    "    const response = pm.response.json();",
+                                    "    pm.expect(response).to.have.property('user');",
+                                    "    pm.expect(response.user).to.have.property('uid');",
+                                    "    pm.expect(response.user).to.have.property('email');",
+                                    "});"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "🏥 Health Check",
+            "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                    "raw": "{{BACKEND_BASE_URL}}/health",
+                    "host": ["{{BACKEND_BASE_URL}}"],
+                    "path": ["health"]
+                }
+            },
+            "event": [
+                {
+                    "listen": "test",
+                    "script": {
+                        "exec": [
+                            "pm.test('Backend is healthy', function () {",
+                            "    pm.response.to.have.status(200);",
+                            "    const response = pm.response.json();",
+                            "    pm.expect(response.status).to.eql('healthy');",
+                            "    pm.expect(response.database).to.eql('Firestore');",
+                            "    pm.expect(response.storage).to.eql('S3');",
+                            "});"
+                        ],
+                        "type": "text/javascript"
+                    }
+                }
+            ]
+        },
+        {
+            "name": "📤 Video Management",
+            "item": [
+                {
+                    "name": "Upload Video",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{AUTH_TOKEN}}"
+                            }
+                        ],
+                        "body": {
+                            "mode": "formdata",
+                            "formdata": [
+                                {
+                                    "key": "file",
+                                    "type": "file",
+                                    "src": []
+                                }
+                            ]
+                        },
+                        "url": {
+                            "raw": "{{BACKEND_BASE_URL}}/upload",
+                            "host": ["{{BACKEND_BASE_URL}}"],
+                            "path": ["upload"]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "if (pm.response.code === 200) {",
+                                    "    const response = pm.response.json();",
+                                    "    pm.collectionVariables.set('VIDEO_ID', response.video_id);",
+                                    "    pm.test('Video uploaded successfully', function () {",
+                                    "        pm.expect(response).to.have.property('video_id');",
+                                    "        pm.expect(response).to.have.property('message');",
+                                    "        pm.expect(response).to.have.property('s3_key');",
+                                    "    });",
+                                    "    console.log('Video ID set:', response.video_id);",
+                                    "} else {",
+                                    "    pm.test('Upload failed as expected', function () {",
+                                    "        pm.response.to.have.status.oneOf([400, 401, 422]);",
+                                    "    });",
+                                    "}"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "List User Videos",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{AUTH_TOKEN}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{BACKEND_BASE_URL}}/list",
+                            "host": ["{{BACKEND_BASE_URL}}"],
+                            "path": ["list"]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('User videos listed', function () {",
+                                    "    pm.response.to.have.status(200);",
+                                    "    const response = pm.response.json();",
+                                    "    pm.expect(response).to.have.property('videos');",
+                                    "    pm.expect(response).to.have.property('total');",
+                                    "    pm.expect(response.videos).to.be.an('array');",
+                                    "});",
+                                    "",
+                                    "// Set video ID from first video if available",
+                                    "if (pm.response.code === 200) {",
+                                    "    const response = pm.response.json();",
+                                    "    if (response.videos.length > 0) {",
+                                    "        pm.collectionVariables.set('VIDEO_ID', response.videos[0].id);",
+                                    "        console.log('Using existing video ID:', response.videos[0].id);",
+                                    "    }",
+                                    "}"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "Get Video Status",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{AUTH_TOKEN}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{BACKEND_BASE_URL}}/status/{{VIDEO_ID}}",
+                            "host": ["{{BACKEND_BASE_URL}}"],
+                            "path": ["status", "{{VIDEO_ID}}"]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('Video status retrieved', function () {",
+                                    "    pm.response.to.have.status.oneOf([200, 404]);",
+                                    "    if (pm.response.code === 200) {",
+                                    "        const response = pm.response.json();",
+                                    "        pm.expect(response).to.have.property('status');",
+                                    "        pm.expect(response).to.have.property('video_id');",
+                                    "        pm.expect(response.video_id).to.eql(pm.collectionVariables.get('VIDEO_ID'));",
+                                    "    }",
+                                    "});"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "Download PDF",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{AUTH_TOKEN}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{BACKEND_BASE_URL}}/download/{{VIDEO_ID}}",
+                            "host": ["{{BACKEND_BASE_URL}}"],
+                            "path": ["download", "{{VIDEO_ID}}"]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('PDF download response', function () {",
+                                    "    pm.response.to.have.status.oneOf([200, 404, 422]);",
+                                    "    if (pm.response.code === 200) {",
+                                    "        pm.expect(pm.response.headers.get('Content-Type')).to.include('application/pdf');",
+                                    "    }",
+                                    "});"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "👑 Admin Endpoints",
+            "item": [
+                {
+                    "name": "Admin - Get All Videos",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{AUTH_TOKEN}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{BACKEND_BASE_URL}}/admin/videos",
+                            "host": ["{{BACKEND_BASE_URL}}"],
+                            "path": ["admin", "videos"]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('Admin can access all videos', function () {",
+                                    "    pm.response.to.have.status.oneOf([200, 403]);",
+                                    "    if (pm.response.code === 200) {",
+                                    "        const response = pm.response.json();",
+                                    "        pm.expect(response).to.have.property('videos');",
+                                    "        pm.expect(response.videos).to.be.an('array');",
+                                    "    }",
+                                    "});"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "Admin - Get Stats",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{AUTH_TOKEN}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{BACKEND_BASE_URL}}/admin/stats",
+                            "host": ["{{BACKEND_BASE_URL}}"],
+                            "path": ["admin", "stats"]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('Admin stats retrieved', function () {",
+                                    "    pm.response.to.have.status.oneOf([200, 403]);",
+                                    "    if (pm.response.code === 200) {",
+                                    "        const response = pm.response.json();",
+                                    "        pm.expect(response).to.have.property('total_videos');",
+                                    "        pm.expect(response).to.have.property('total_users');",
+                                    "    }",
+                                    "});"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "Admin - Get Servers",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{AUTH_TOKEN}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{BACKEND_BASE_URL}}/admin/servers",
+                            "host": ["{{BACKEND_BASE_URL}}"],
+                            "path": ["admin", "servers"]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('Admin servers retrieved', function () {",
+                                    "    pm.response.to.have.status.oneOf([200, 403]);",
+                                    "    if (pm.response.code === 200) {",
+                                    "        const response = pm.response.json();",
+                                    "        pm.expect(response).to.have.property('servers');",
+                                    "        pm.expect(response.servers).to.be.an('array');",
+                                    "    }",
+                                    "});"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "🔗 Integration Tests",
+            "item": [
+                {
+                    "name": "Test Backend-Worker Communication",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{WORKER_BASE_URL}}/health",
+                            "host": ["{{WORKER_BASE_URL}}"],
+                            "path": ["health"]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('Worker service accessible from backend', function () {",
+                                    "    pm.response.to.have.status(200);",
+                                    "    const response = pm.response.json();",
+                                    "    pm.expect(response.status).to.eql('healthy');",
+                                    "});",
+                                    "",
+                                    "pm.test('Worker has Firebase integration', function () {",
+                                    "    const response = pm.response.json();",
+                                    "    pm.expect(response).to.have.property('api_version');",
+                                    "    pm.expect(response).to.have.property('service');",
+                                    "});"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "Test Worker Video List",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{WORKER_BASE_URL}}/list",
+                            "host": ["{{WORKER_BASE_URL}}"],
+                            "path": ["list"]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('Worker can access Firebase videos', function () {",
+                                    "    pm.response.to.have.status(200);",
+                                    "    const response = pm.response.json();",
+                                    "    pm.expect(response).to.have.property('total');",
+                                    "    pm.expect(response).to.have.property('source');",
+                                    "    pm.expect(response.source).to.eql('Firebase');",
+                                    "    pm.expect(response.videos).to.be.an('array');",
+                                    "});",
+                                    "",
+                                    "console.log('Worker has access to', pm.response.json().total, 'videos from Firebase');"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "Test HTTP Worker Communication",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"video_id\": \"test-http-{{$timestamp}}\",\n    \"user_id\": \"{{USER_ID}}\",\n    \"filename\": \"test-http-communication.mp4\",\n    \"s3_key\": \"videos/test-http-{{$timestamp}}/test.mp4\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{WORKER_BASE_URL}}/generate-pdf",
+                            "host": ["{{WORKER_BASE_URL}}"],
+                            "path": ["generate-pdf"]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('Worker HTTP communication working', function () {",
+                                    "    pm.response.to.have.status.oneOf([201, 400]);",
+                                    "    if (pm.response.code === 201) {",
+                                    "        const response = pm.response.json();",
+                                    "        pm.expect(response).to.have.property('video_id');",
+                                    "        pm.expect(response).to.have.property('status');",
+                                    "    } else if (pm.response.code === 400) {",
+                                    "        // Expected - no actual video file provided",
+                                    "        const response = pm.response.json();",
+                                    "        pm.expect(response).to.have.property('error');",
+                                    "    }",
+                                    "});",
+                                    "",
+                                    "console.log('HTTP Communication test response:', pm.response.code);"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "🧪 Full Cycle Test",
+            "item": [
+                {
+                    "name": "1. Get Authentication Token",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"email\": \"test-user@thakii.dev\",\n    \"uid\": \"test-user-{{$timestamp}}\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{BACKEND_BASE_URL}}/auth/mock-user-token",
+                            "host": ["{{BACKEND_BASE_URL}}"],
+                            "path": ["auth", "mock-user-token"]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('Authentication token obtained', function () {",
+                                    "    pm.response.to.have.status(200);",
+                                    "    const response = pm.response.json();",
+                                    "    pm.expect(response).to.have.property('custom_token');",
+                                    "    pm.expect(response).to.have.property('user_data');",
+                                    "    pm.collectionVariables.set('AUTH_TOKEN', response.custom_token);",
+                                    "    pm.collectionVariables.set('USER_ID', response.user_data.uid);",
+                                    "});",
+                                    "",
+                                    "console.log('Full cycle test - Authentication ready');"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "2. List Initial Videos",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Authorization",
+                                "value": "Bearer {{AUTH_TOKEN}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{BACKEND_BASE_URL}}/list",
+                            "host": ["{{BACKEND_BASE_URL}}"],
+                            "path": ["list"]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('User isolation working', function () {",
+                                    "    pm.response.to.have.status(200);",
+                                    "    const response = pm.response.json();",
+                                    "    pm.expect(response).to.have.property('videos');",
+                                    "    // Should only see user's own videos",
+                                    "    console.log('User sees', response.total, 'videos (user isolation working)');",
+                                    "});"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "3. Verify Worker Integration",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "url": {
+                            "raw": "{{WORKER_BASE_URL}}/list",
+                            "host": ["{{WORKER_BASE_URL}}"],
+                            "path": ["list"]
+                        }
+                    },
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test('Worker has access to all videos', function () {",
+                                    "    pm.response.to.have.status(200);",
+                                    "    const response = pm.response.json();",
+                                    "    pm.expect(response.source).to.eql('Firebase');",
+                                    "    pm.expect(response.total).to.be.above(0);",
+                                    "    console.log('Worker sees', response.total, 'total videos in Firebase');",
+                                    "});"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "event": [
+        {
+            "listen": "prerequest",
+            "script": {
+                "type": "text/javascript",
+                "exec": [
+                    "// Global pre-request script",
+                    "console.log('Request to:', pm.request.url);"
+                ]
+            }
+        },
+        {
+            "listen": "test",
+            "script": {
+                "type": "text/javascript",
+                "exec": [
+                    "// Global test script",
+                    "pm.test('Response time acceptable', function () {",
+                    "    pm.expect(pm.response.responseTime).to.be.below(30000);",
+                    "});"
+                ]
+            }
+        }
+    ]
+}

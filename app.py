@@ -339,7 +339,7 @@ def upload_video():
             worker_url = os.getenv('WORKER_SERVICE_URL', 'https://thakii-02.fanusdigital.site/thakii-worker')
             
             response = requests.post(
-                f"{worker_url}/generate-pdf",
+                f"{worker_url}/process-from-s3",
                 json={
                     "video_id": video_id,
                     "user_id": current_user['uid'],

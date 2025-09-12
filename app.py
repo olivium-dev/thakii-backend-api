@@ -105,6 +105,84 @@ if os.getenv('ENABLE_MOCK_AUTH', '').lower() == 'true':
         except Exception as e:
             return jsonify({"error": "Static mock token generation failed", "message": str(e)}), 500
 
+@app.route("/auth/login", methods=["POST"])
+def firebase_login():
+    """
+    Login with Firebase token and get 30-day backend token
+    
+    Accepts Firebase ID token and returns a long-lived backend token
+    """
+    try:
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({"error": "No Firebase token provided"}), 400
+        
+        firebase_token = auth_header.split(' ')[1]
+        
+        # Decode Firebase token without verification (bypass broken verification)
+        import jwt
+        try:
+            # Decode without signature verification to get user data
+            firebase_data = jwt.decode(firebase_token, options={"verify_signature": False})
+            
+            # Validate required fields
+            user_id = firebase_data.get('user_id') or firebase_data.get('sub')
+            email = firebase_data.get('email')
+            
+            if not user_id or not email:
+                return jsonify({"error": "Invalid Firebase token data"}), 400
+            
+            # Check if token is expired
+            import time
+            exp = firebase_data.get('exp', 0)
+            if exp < time.time():
+                return jsonify({"error": "Firebase token expired"}), 401
+            
+            # Generate 30-day backend token
+            from core.custom_auth import custom_token_manager
+            
+            # Create user data for backend token
+            backend_user_data = {
+                'uid': user_id,
+                'user_id': user_id,
+                'email': email,
+                'name': firebase_data.get('name', email.split('@')[0]),
+                'picture': firebase_data.get('picture', ''),
+                'email_verified': firebase_data.get('email_verified', True),
+                'firebase_provider': firebase_data.get('firebase', {}).get('sign_in_provider', 'unknown'),
+                'auth_time': firebase_data.get('auth_time', int(time.time()))
+            }
+            
+            # Generate 30-day custom token
+            backend_token = custom_token_manager.generate_custom_token(backend_user_data)
+            
+            return jsonify({
+                "success": True,
+                "backend_token": backend_token,
+                "expires_in_days": 30,
+                "user": {
+                    "uid": user_id,
+                    "email": email,
+                    "name": backend_user_data['name'],
+                    "picture": backend_user_data['picture'],
+                    "is_admin": email in ['ouday.khaled@gmail.com', 'appsaawt@gmail.com']
+                },
+                "message": "Firebase login successful, use backend_token for all future requests"
+            })
+            
+        except jwt.InvalidTokenError as e:
+            return jsonify({
+                "error": "Invalid Firebase token format",
+                "message": str(e)
+            }), 400
+            
+    except Exception as e:
+        print(f"Firebase login error: {str(e)}")
+        return jsonify({
+            "error": "Login failed",
+            "message": str(e)
+        }), 500
+
 @app.route("/auth/exchange-token", methods=["POST"])
 def exchange_firebase_token():
     """

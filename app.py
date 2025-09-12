@@ -462,7 +462,7 @@ def download_pdf(video_id):
         if not is_super_admin(current_user['email']) and task.get('user_id') != current_user['uid']:
             return jsonify({"error": "Access denied"}), 403
         
-        if task.get("status") != "done":
+        if task.get("status") not in ["done", "completed"]:
             return jsonify({"error": "PDF not ready yet"}), 400
         
         # Generate presigned URL for PDF download

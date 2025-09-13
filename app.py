@@ -1,6 +1,7 @@
 import os
 import uuid
 import datetime
+from pathlib import Path
 from flask import Flask, request, jsonify, redirect, abort, g
 from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -374,6 +375,151 @@ def upload_video():
     except Exception as e:
         print(f"Error uploading video: {str(e)}")
         return jsonify({"error": f"Failed to upload video: {str(e)}"}), 500
+
+@app.route("/upload-chunk", methods=["POST"])
+@require_auth
+def upload_chunk():
+    """Upload a single chunk of a large file"""
+    try:
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+        
+        # Get chunk metadata
+        chunk_index = request.form.get('chunk_index')
+        total_chunks = request.form.get('total_chunks')
+        file_id = request.form.get('file_id')
+        original_filename = request.form.get('original_filename')
+        
+        if not all([chunk_index, total_chunks, file_id, original_filename]):
+            return jsonify({"error": "Missing chunk metadata"}), 400
+        
+        # Get chunk file
+        if 'chunk' not in request.files:
+            return jsonify({"error": "No chunk file provided"}), 400
+        
+        chunk_file = request.files['chunk']
+        if chunk_file.filename == '':
+            return jsonify({"error": "No chunk file selected"}), 400
+        
+        # Create chunks directory
+        chunks_dir = Path(f"/tmp/chunks/{file_id}")
+        chunks_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save chunk
+        chunk_path = chunks_dir / f"chunk_{chunk_index}"
+        chunk_file.save(str(chunk_path))
+        
+        print(f"📦 Chunk uploaded: {file_id} - {chunk_index}/{total_chunks}")
+        print(f"   Chunk size: {chunk_path.stat().st_size:,} bytes")
+        
+        return jsonify({
+            "chunk_index": int(chunk_index),
+            "total_chunks": int(total_chunks),
+            "file_id": file_id,
+            "chunk_size": chunk_path.stat().st_size,
+            "message": f"Chunk {chunk_index}/{total_chunks} uploaded successfully"
+        })
+        
+    except Exception as e:
+        print(f"Error uploading chunk: {str(e)}")
+        return jsonify({"error": f"Failed to upload chunk: {str(e)}"}), 500
+
+@app.route("/assemble-file", methods=["POST"])
+@require_auth
+def assemble_file():
+    """Assemble chunks into final file and process"""
+    try:
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+        
+        data = request.get_json()
+        file_id = data.get('file_id')
+        total_chunks = data.get('total_chunks')
+        original_filename = data.get('original_filename')
+        
+        if not all([file_id, total_chunks, original_filename]):
+            return jsonify({"error": "Missing assembly metadata"}), 400
+        
+        chunks_dir = Path(f"/tmp/chunks/{file_id}")
+        if not chunks_dir.exists():
+            return jsonify({"error": "Chunks directory not found"}), 404
+        
+        # Verify all chunks exist
+        missing_chunks = []
+        for i in range(int(total_chunks)):
+            chunk_path = chunks_dir / f"chunk_{i}"
+            if not chunk_path.exists():
+                missing_chunks.append(i)
+        
+        if missing_chunks:
+            return jsonify({
+                "error": "Missing chunks",
+                "missing_chunks": missing_chunks
+            }), 400
+        
+        # Assemble file
+        video_id = str(uuid.uuid4())
+        assembled_file = Path(f"/tmp/{video_id}_{original_filename}")
+        
+        print(f"🔧 Assembling file: {file_id} → {video_id}")
+        
+        with open(assembled_file, 'wb') as outfile:
+            for i in range(int(total_chunks)):
+                chunk_path = chunks_dir / f"chunk_{i}"
+                with open(chunk_path, 'rb') as chunk_file:
+                    outfile.write(chunk_file.read())
+                print(f"   Assembled chunk {i}/{total_chunks}")
+        
+        print(f"✅ File assembled: {assembled_file.stat().st_size:,} bytes")
+        
+        # Upload to S3
+        with open(assembled_file, 'rb') as file_obj:
+            video_key = s3_storage.upload_video(file_obj, video_id, original_filename)
+        
+        # Create task in Firestore
+        task_data = firestore_db.create_video_task(
+            video_id, 
+            original_filename, 
+            current_user['uid'], 
+            current_user['email'], 
+            "in_queue"
+        )
+        
+        # Trigger worker processing
+        import requests
+        try:
+            worker_url = os.getenv('WORKER_SERVICE_URL', 'https://thakii-02.fanusdigital.site/thakii-worker')
+            response = requests.post(
+                f"{worker_url}/process-from-s3",
+                json={
+                    "video_id": video_id,
+                    "user_id": current_user['uid'],
+                    "filename": original_filename,
+                    "s3_key": video_key
+                },
+                timeout=1800
+            )
+            print(f"Worker triggered for assembled file: {video_id}")
+        except Exception as trigger_error:
+            print(f"Failed to trigger worker: {trigger_error}")
+        
+        # Cleanup chunks and temporary file
+        import shutil
+        shutil.rmtree(chunks_dir)
+        assembled_file.unlink()
+        
+        return jsonify({
+            "video_id": video_id,
+            "message": "File assembled and queued for processing",
+            "s3_key": video_key,
+            "total_size": assembled_file.stat().st_size if assembled_file.exists() else 0
+        })
+        
+    except Exception as e:
+        print(f"Error assembling file: {str(e)}")
+        return jsonify({"error": f"Failed to assemble file: {str(e)}"}), 500
 
 @app.route("/list", methods=["GET"])
 @require_auth

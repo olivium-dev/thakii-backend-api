@@ -20,6 +20,9 @@ jobs:
       - name: Install Deployment Tools
         run: |
           sudo apt-get update -qq && sudo apt-get install -y sshpass
+          # Install Cloudflare CLI for SSH proxy access only
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared-linux-amd64.deb
           echo "✅ Deployment tools ready"
 
       - name: Setup SSH
@@ -27,11 +30,12 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           
-          # Create SSH config for direct access (NO Cloudflare proxy)
+          # Create SSH config for Cloudflare proxy access (required for server SSH)
           cat > ~/.ssh/config << EOF
           Host production-server
             HostName vps-71.fds-1.com
             User ec2-user
+            ProxyCommand cloudflared access ssh --hostname %h
             StrictHostKeyChecking no
             UserKnownHostsFile /dev/null
             PasswordAuthentication yes
@@ -48,9 +52,9 @@ jobs:
           # Install sshpass for password authentication
           sudo apt-get update -qq && sudo apt-get install -y sshpass
           
-          # Execute SIMPLE deployment via SSH (NO Cloudflare/Nginx changes)
+          # Execute SIMPLE deployment via SSH (Cloudflare proxy for access only)
           echo "🔐 Connecting to production server..."
-          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no ec2-user@vps-71.fds-1.com 'cd thakii-backend-api && git pull origin main && source venv/bin/activate && pip install -r requirements.txt && sudo systemctl restart thakii-backend.service && echo "✅ Backend updated and restarted"'
+          sshpass -p "$SSH_PASSWORD" ssh -o ProxyCommand="cloudflared access ssh --hostname %h" -o StrictHostKeyChecking=no ec2-user@vps-71.fds-1.com 'cd thakii-backend-api && git pull origin main && source venv/bin/activate && pip install -r requirements.txt && sudo systemctl restart thakii-backend.service && echo "✅ Backend updated and restarted"'
 
       - name: Test Deployment
         run: |

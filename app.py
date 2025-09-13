@@ -346,7 +346,7 @@ def upload_video():
                     "filename": filename,
                     "s3_key": video_key
                 },
-                timeout=30
+                timeout=1800  # 30 minutes for large file processing
             )
             
             if response.status_code == 201:
@@ -800,4 +800,9 @@ def get_admin_stats():
 if __name__ == "__main__":
     # Ensure super admins exist in database on startup
     admin_manager.ensure_super_admins_exist()
-    app.run(host="0.0.0.0", port=5001, debug=False)
+    
+    # Configure Flask for large file uploads
+    app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024 * 1024  # 5GB max file size
+    app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0  # Disable caching for large files
+    
+    app.run(host="0.0.0.0", port=5001, debug=False, threaded=True)

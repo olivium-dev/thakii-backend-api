@@ -60,11 +60,21 @@ jobs:
         run: |
           echo "🧪 Testing deployment..."
           
-          # Test health
-          HEALTH=$(curl -s https://thakii-02.fanusdigital.site/health)
-          echo "Health: $HEALTH"
+          # Wait for service to fully start after restart
+          echo "⏳ Waiting for backend service to start..."
+          sleep 30
           
-          # Test CORS
-          curl -s -H "Origin: https://thakii-frontend.netlify.app" -X OPTIONS https://thakii-02.fanusdigital.site/health -v 2>&1 | grep -i access-control
+          # Test backend health
+          echo "🏥 Testing backend health..."
+          HEALTH=$(curl -s "https://thakii-02.fanusdigital.site/thakii-be/health")
+          echo "Health response: $HEALTH"
+          
+          # Verify JSON response
+          if echo "$HEALTH" | jq -e '.status' >/dev/null 2>&1; then
+            echo "✅ Backend responding with proper JSON"
+          else
+            echo "❌ Backend not responding properly"
+            exit 1
+          fi
           
           echo "✅ Deployment test complete!"

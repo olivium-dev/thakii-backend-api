@@ -114,82 +114,8 @@ def health_check():
         "timestamp": datetime.datetime.now().isoformat()
     })
 
-# Optional mock auth endpoints, controlled by env flag ENABLE_MOCK_AUTH=true
-if os.getenv('ENABLE_MOCK_AUTH', '').lower() == 'true':
-    @app.route("/auth/mock-admin-token", methods=["POST"])
-    def generate_mock_admin_token():
-        try:
-            token = custom_token_manager.generate_mock_token('admin')
-            return jsonify({
-                "success": True,
-                "custom_token": token,
-                "expires_in_hours": 72,
-                "user": {
-                    'uid': 'mock-admin-user-id',
-                    'email': 'mock.admin@thakii.test',
-                    'name': 'Mock Admin User',
-                    'picture': 'https://via.placeholder.com/96x96/4F46E5/FFFFFF?text=MA',
-                    'is_admin': True,
-                    'mock': True
-                },
-                "token_type": "custom_backend"
-            })
-        except Exception as e:
-            return jsonify({"error": "Mock token generation failed", "message": str(e)}), 500
-
-    @app.route("/auth/mock-user-token", methods=["POST"])
-    def generate_mock_user_token():
-        try:
-            # Get user data from request
-            user_data = request.get_json() or {}
-            provided_email = user_data.get('email', 'mock.user@thakii.test')
-            
-            # Generate unique UID based on email for proper user isolation
-            import hashlib
-            provided_uid = user_data.get('uid', f"mock-user-{hashlib.md5(provided_email.encode()).hexdigest()[:8]}")
-            
-            # Generate token with provided user data
-            custom_user_data = {
-                'uid': provided_uid,
-                'user_id': provided_uid,
-                'email': provided_email,
-                'name': user_data.get('name', provided_email.split('@')[0]),
-                'picture': user_data.get('picture', 'https://via.placeholder.com/96x96/10B981/FFFFFF?text=MU'),
-                'email_verified': True,
-                'mock': True
-            }
-            
-            token = custom_token_manager.generate_custom_token(custom_user_data)
-            return jsonify({
-                "success": True,
-                "custom_token": token,
-                "expires_in_hours": 72,
-                "user": {
-                    'uid': provided_uid,
-                    'email': provided_email,
-                    'name': custom_user_data['name'],
-                    'picture': custom_user_data['picture'],
-                    'is_admin': provided_email in ['ouday.khaled@gmail.com', 'appsaawt@gmail.com'],
-                    'mock': True
-                },
-                "token_type": "custom_backend"
-            })
-        except Exception as e:
-            return jsonify({"error": "Mock token generation failed", "message": str(e)}), 500
-
-    @app.route("/auth/mock-static-token", methods=["GET"])
-    def get_static_mock_token():
-        """Return a single, stable mock token for production testing."""
-        try:
-            token = custom_token_manager.generate_static_mock_token()
-            return jsonify({
-                "success": True,
-                "custom_token": token,
-                "token_type": "custom_backend",
-                "note": "Static mock token enabled"
-            })
-        except Exception as e:
-            return jsonify({"error": "Static mock token generation failed", "message": str(e)}), 500
+# Mock authentication endpoints removed for production security
+# Use proper Firebase authentication only
 
 @app.route("/auth/login", methods=["POST"])
 def firebase_login():

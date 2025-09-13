@@ -143,7 +143,10 @@ if os.getenv('ENABLE_MOCK_AUTH', '').lower() == 'true':
             # Get user data from request
             user_data = request.get_json() or {}
             provided_email = user_data.get('email', 'mock.user@thakii.test')
-            provided_uid = user_data.get('uid', 'mock-regular-user-id')
+            
+            # Generate unique UID based on email for proper user isolation
+            import hashlib
+            provided_uid = user_data.get('uid', f"mock-user-{hashlib.md5(provided_email.encode()).hexdigest()[:8]}")
             
             # Generate token with provided user data
             custom_user_data = {

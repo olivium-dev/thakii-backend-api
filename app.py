@@ -16,6 +16,9 @@ from core.admin_manager import admin_manager
 
 load_dotenv()
 
+# Worker Service Configuration
+WORKER_SERVICE_URL = os.getenv('WORKER_SERVICE_URL', 'https://thakii-02.fanusdigital.site/thakii-worker')
+
 app = Flask(__name__)
 
 # Configure app to work behind Nginx reverse proxy
@@ -36,6 +39,69 @@ CORS(
 )
 
 s3_storage = S3Storage()
+
+def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key: str) -> bool:
+    """Trigger worker processing via HTTP with enhanced error handling"""
+    import requests
+    try:
+        worker_url = WORKER_SERVICE_URL
+        payload = {
+            "video_id": video_id,
+            "user_id": user_id,
+            "filename": filename,
+            "s3_key": s3_key
+        }
+        
+        print(f"🚀 Triggering worker for video {video_id}")
+        print(f"   Worker URL: {worker_url}/process-from-s3")
+        print(f"   Payload: {payload}")
+        
+        response = requests.post(
+            f"{worker_url}/process-from-s3",
+            json=payload,
+            timeout=30,  # Reduced timeout for initial trigger
+            headers={'Content-Type': 'application/json'}
+        )
+        
+        print(f"📊 Worker response: {response.status_code}")
+        
+        if response.status_code == 201:
+            print(f"✅ Worker triggered successfully: {video_id}")
+            return True
+        else:
+            print(f"❌ Worker trigger failed: {response.status_code}")
+            print(f"   Response: {response.text}")
+            
+            # Update task status to failed
+            firestore_db.update_video_task(video_id, {
+                'status': 'failed',
+                'error_message': f'Worker trigger failed: HTTP {response.status_code}'
+            })
+            return False
+            
+    except requests.exceptions.Timeout:
+        print(f"⏱️ Worker trigger timeout: {video_id}")
+        firestore_db.update_video_task(video_id, {
+            'status': 'failed',
+            'error_message': 'Worker service timeout'
+        })
+        return False
+        
+    except requests.exceptions.ConnectionError:
+        print(f"🔌 Worker service unavailable: {video_id}")
+        firestore_db.update_video_task(video_id, {
+            'status': 'failed',
+            'error_message': 'Worker service unavailable'
+        })
+        return False
+        
+    except Exception as e:
+        print(f"💥 Worker trigger error: {video_id} - {e}")
+        firestore_db.update_video_task(video_id, {
+            'status': 'failed',
+            'error_message': f'Worker trigger failed: {str(e)}'
+        })
+        return False
 
 @app.route("/health", methods=["GET"])
 def health_check():
@@ -334,37 +400,16 @@ def upload_video():
         )
         print(f"Task created in Firestore: {video_id} for user: {current_user['email']}")
 
-        # Trigger worker via HTTP API instead of subprocess
-        import requests
-        try:
-            worker_url = os.getenv('WORKER_SERVICE_URL', 'https://thakii-02.fanusdigital.site/thakii-worker')
-            
-            response = requests.post(
-                f"{worker_url}/process-from-s3",
-                json={
-                    "video_id": video_id,
-                    "user_id": current_user['uid'],
-                    "filename": filename,
-                    "s3_key": video_key
-                },
-                timeout=1800  # 30 minutes for large file processing
-            )
-            
-            if response.status_code == 201:
-                print(f"Worker triggered successfully via HTTP: {video_id}")
-            else:
-                print(f"Worker HTTP trigger failed: {response.status_code} - {response.text}")
-                
-        except Exception as trigger_error:
-            print(f"Failed to trigger worker via HTTP: {trigger_error}")
-            # Fallback: Update task status to failed
-            try:
-                firestore_db.update_video_task(video_id, {
-                    'status': 'failed',
-                    'error_message': f'Worker trigger failed: {str(trigger_error)}'
-                })
-            except:
-                pass
+        # Trigger worker processing with enhanced error handling
+        trigger_success = trigger_worker_processing(
+            video_id=video_id,
+            user_id=current_user['uid'],
+            filename=filename,
+            s3_key=video_key
+        )
+        
+        if not trigger_success:
+            print(f"⚠️ Worker trigger failed for {video_id}, but upload successful")
 
         return jsonify({
             "video_id": video_id, 
@@ -487,23 +532,16 @@ def assemble_file():
             "in_queue"
         )
         
-        # Trigger worker processing
-        import requests
-        try:
-            worker_url = os.getenv('WORKER_SERVICE_URL', 'https://thakii-02.fanusdigital.site/thakii-worker')
-            response = requests.post(
-                f"{worker_url}/process-from-s3",
-                json={
-                    "video_id": video_id,
-                    "user_id": current_user['uid'],
-                    "filename": original_filename,
-                    "s3_key": video_key
-                },
-                timeout=1800
-            )
-            print(f"Worker triggered for assembled file: {video_id}")
-        except Exception as trigger_error:
-            print(f"Failed to trigger worker: {trigger_error}")
+        # Trigger worker processing with enhanced error handling
+        trigger_success = trigger_worker_processing(
+            video_id=video_id,
+            user_id=current_user['uid'],
+            filename=original_filename,
+            s3_key=video_key
+        )
+        
+        if not trigger_success:
+            print(f"⚠️ Worker trigger failed for assembled file {video_id}")
         
         # Cleanup chunks and temporary file
         import shutil
@@ -942,6 +980,39 @@ def get_admin_stats():
         return jsonify(stats)
     except Exception as e:
         return jsonify({'error': f'Failed to get admin stats: {str(e)}'}), 500
+
+@app.route("/worker-health", methods=["GET"])
+@require_admin
+def check_worker_health():
+    """Admin endpoint to check worker service health"""
+    import requests
+    try:
+        worker_url = WORKER_SERVICE_URL
+        response = requests.get(f"{worker_url}/health", timeout=10)
+        
+        if response.status_code == 200:
+            worker_data = response.json()
+            return jsonify({
+                "worker_status": "healthy",
+                "worker_url": worker_url,
+                "worker_response": worker_data,
+                "timestamp": datetime.datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                "worker_status": "unhealthy",
+                "worker_url": worker_url,
+                "error": f"HTTP {response.status_code}",
+                "timestamp": datetime.datetime.now().isoformat()
+            }), 503
+            
+    except Exception as e:
+        return jsonify({
+            "worker_status": "unavailable",
+            "worker_url": WORKER_SERVICE_URL,
+            "error": str(e),
+            "timestamp": datetime.datetime.now().isoformat()
+        }), 503
 
 if __name__ == "__main__":
     # Ensure super admins exist in database on startup

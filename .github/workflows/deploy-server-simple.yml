@@ -44,46 +44,76 @@ jobs:
           cd thakii-backend-api
           git pull origin main
           
-          echo "🔧 Fixing Nginx CORS..."
+          echo "🔧 Fixing Nginx with CORRECT path routing for both services..."
           sudo tee /etc/nginx/sites-available/thakii-backend.conf > /dev/null << 'NGINXCONF'
 server {
     listen 80;
-    server_name thakii-02.fanusdigital.site;
-    return 301 https://$server_name$request_uri;
-}
-
-server {
     listen 443 ssl http2;
-    server_name thakii-02.fanusdigital.site;
-
+    server_name thakii-02.fanusdigital.site vps-71.fds-1.com;
+    
+    # SSL configuration
     ssl_certificate /etc/ssl/certs/thakii.crt;
     ssl_certificate_key /etc/ssl/private/thakii.key;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers off;
     ssl_session_cache shared:SSL:10m;
-
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    add_header X-Frame-Options DENY always;
-    add_header X-Content-Type-Options nosniff always;
-    add_header X-XSS-Protection "1; mode=block" always;
-
+    
+    # Set maximum upload size to 100GB
+    client_max_body_size 100G;
+    
+    # Worker Service Routes (CRITICAL - DO NOT REMOVE)
+    location /thakii-worker/ {
+        rewrite ^/thakii-worker/(.*) /$1 break;
+        proxy_pass http://127.0.0.1:9000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 300s;
+        proxy_send_timeout 3600s;
+        proxy_read_timeout 3600s;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        add_header Access-Control-Allow-Origin *;
+        add_header Access-Control-Allow-Methods 'GET, POST, PUT, DELETE, OPTIONS';
+        add_header Access-Control-Allow-Headers 'Content-Type, Authorization';
+        if ($request_method = OPTIONS) {
+            return 204;
+        }
+    }
+    
+    # Backend Service Routes (CRITICAL - FRONTEND EXPECTS /thakii-be/)
+    location /thakii-be/ {
+        rewrite ^/thakii-be/(.*) /$1 break;
+        proxy_pass http://127.0.0.1:5001;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 300s;
+        proxy_send_timeout 3600s;
+        proxy_read_timeout 3600s;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        # Let Flask handle CORS headers
+    }
+    
+    # Default route to backend (for backward compatibility)
     location / {
         proxy_pass http://127.0.0.1:5001;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        
-        client_max_body_size 500M;
         proxy_connect_timeout 300s;
-        proxy_send_timeout 300s;
-        proxy_read_timeout 300s;
-        proxy_buffering off;
+        proxy_send_timeout 3600s;
+        proxy_read_timeout 3600s;
         proxy_request_buffering off;
+        proxy_buffering off;
     }
 
-    access_log /var/log/nginx/thakii-backend.access.log;
-    error_log /var/log/nginx/thakii-backend.error.log;
+    access_log /var/log/nginx/access.log;
+    error_log /var/log/nginx/error.log;
 }
 NGINXCONF
           

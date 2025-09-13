@@ -180,14 +180,16 @@ EOF
           # Deploy using SSH with password authentication
           echo "🔐 Deploying to production server..."
           
-          # Copy and execute deployment script
-          echo "🔐 Deploying to production server..."
-          
-          # Copy deployment script
-          sshpass -p "$SSH_PASSWORD" scp -o ProxyCommand="cloudflared access ssh --hostname %h" -o StrictHostKeyChecking=no deploy.sh ec2-user@vps-71.fds-1.com:~/
-          
-          # Execute deployment
-          sshpass -p "$SSH_PASSWORD" ssh -o ProxyCommand="cloudflared access ssh --hostname %h" -o StrictHostKeyChecking=no ec2-user@vps-71.fds-1.com "chmod +x ~/deploy.sh && ~/deploy.sh"
+          # Execute deployment via SSH
+          echo "🔐 Connecting to production server..."
+          sshpass -p "$SSH_PASSWORD" ssh -o ProxyCommand="cloudflared access ssh --hostname %h" -o StrictHostKeyChecking=no ec2-user@vps-71.fds-1.com "
+          cd thakii-backend-api && 
+          git pull origin main && 
+          source venv/bin/activate && 
+          pip install -r requirements.txt && 
+          sudo systemctl restart thakii-backend.service && 
+          echo '✅ Backend updated and restarted'
+          "
 
       - name: Test Deployment
         run: |

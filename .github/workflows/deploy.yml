@@ -1,0 +1,87 @@
+name: Deploy Backend to Server
+
+on:
+  push:
+    branches:
+      - main
+      - feature/postgres-migration
+  workflow_dispatch:
+
+env:
+  SERVER_HOST: 192.168.2.71
+  SERVER_USER: ec2-user
+  DEPLOY_PATH: /home/ec2-user/thakii-backend-api
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Install sshpass
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+      
+      - name: Deploy to server
+        env:
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          # Deploy backend
+          sshpass -p "$SERVER_PASSWORD" ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_HOST << 'EOF'
+            set -e
+            
+            echo "=== Deploying Backend API ==="
+            cd $DEPLOY_PATH || exit 1
+            
+            # Get current branch name from GitHub
+            BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+            echo "Deploying branch: $BRANCH_NAME"
+            
+            # Fetch and checkout branch
+            git fetch origin
+            git checkout $BRANCH_NAME
+            git pull origin $BRANCH_NAME
+            
+            # Install dependencies
+            pip3 install --user -r requirements.txt
+            
+            # Restart service
+            sudo systemctl restart thakii-backend
+            
+            # Check service status
+            sleep 3
+            sudo systemctl status thakii-backend --no-pager
+            
+            echo "=== Backend deployment complete ==="
+          EOF
+      
+      - name: Verify deployment
+        env:
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          sshpass -p "$SERVER_PASSWORD" ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_HOST << 'EOF'
+            # Wait for service to be ready
+            sleep 5
+            
+            # Check health endpoint
+            HEALTH_CHECK=$(curl -s http://localhost:5001/health | jq -r '.status')
+            
+            if [ "$HEALTH_CHECK" == "healthy" ]; then
+              echo "✅ Backend is healthy"
+              exit 0
+            else
+              echo "❌ Backend health check failed"
+              exit 1
+            fi
+          EOF
+      
+      - name: Notify deployment status
+        if: always()
+        run: |
+          if [ $? -eq 0 ]; then
+            echo "✅ Deployment successful"
+          else
+            echo "❌ Deployment failed"
+          fi
+

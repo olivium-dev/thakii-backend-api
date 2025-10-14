@@ -7,12 +7,13 @@ from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
 from core.s3_storage import S3Storage
-from core.firestore_db import firestore_db
+from core.postgres_db import postgres_db
 from core.auth_middleware import require_auth, require_admin, get_current_user, is_super_admin, verify_auth_token
 from core.custom_auth import custom_token_manager
 from core.push_notification_service import push_service
 from core.server_manager import server_manager
 from core.admin_manager import admin_manager
+from core.websocket_manager import init_websocket, get_websocket_manager
 
 load_dotenv()
 
@@ -39,6 +40,9 @@ CORS(
 )
 
 s3_storage = S3Storage()
+
+# Initialize WebSocket
+websocket_manager = init_websocket(app)
 
 def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key: str) -> bool:
     """Trigger worker processing via HTTP with enhanced error handling"""
@@ -73,34 +77,59 @@ def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key
             print(f"   Response: {response.text}")
             
             # Update task status to failed
-            firestore_db.update_video_task(video_id, {
+            postgres_db.update_video_task(video_id, {
                 'status': 'failed',
                 'error_message': f'Worker trigger failed: HTTP {response.status_code}'
             })
+            # Notify via WebSocket
+            if websocket_manager:
+                websocket_manager.notify_task_update(user_id, {
+                    'video_id': video_id,
+                    'status': 'failed',
+                    'error_message': f'Worker trigger failed: HTTP {response.status_code}'
+                })
             return False
             
     except requests.exceptions.Timeout:
         print(f"⏱️ Worker trigger timeout: {video_id}")
-        firestore_db.update_video_task(video_id, {
+        postgres_db.update_video_task(video_id, {
             'status': 'failed',
             'error_message': 'Worker service timeout'
         })
+        if websocket_manager:
+            websocket_manager.notify_task_update(user_id, {
+                'video_id': video_id,
+                'status': 'failed',
+                'error_message': 'Worker service timeout'
+            })
         return False
         
     except requests.exceptions.ConnectionError:
         print(f"🔌 Worker service unavailable: {video_id}")
-        firestore_db.update_video_task(video_id, {
+        postgres_db.update_video_task(video_id, {
             'status': 'failed',
             'error_message': 'Worker service unavailable'
         })
+        if websocket_manager:
+            websocket_manager.notify_task_update(user_id, {
+                'video_id': video_id,
+                'status': 'failed',
+                'error_message': 'Worker service unavailable'
+            })
         return False
         
     except Exception as e:
         print(f"💥 Worker trigger error: {video_id} - {e}")
-        firestore_db.update_video_task(video_id, {
+        postgres_db.update_video_task(video_id, {
             'status': 'failed',
             'error_message': f'Worker trigger failed: {str(e)}'
         })
+        if websocket_manager:
+            websocket_manager.notify_task_update(user_id, {
+                'video_id': video_id,
+                'status': 'failed',
+                'error_message': f'Worker trigger failed: {str(e)}'
+            })
         return False
 
 @app.route("/health", methods=["GET"])
@@ -109,8 +138,9 @@ def health_check():
     return jsonify({
         "service": "Thakii Lecture2PDF Service",
         "status": "healthy",
-        "database": "Firestore",
+        "database": "PostgreSQL",
         "storage": "S3",
+        "websocket": "enabled",
         "timestamp": datetime.datetime.now().isoformat()
     })
 
@@ -319,15 +349,23 @@ def upload_video():
         video_key = s3_storage.upload_video(file, video_id, filename)
         print(f"Video uploaded to S3: {video_key}")
         
-        # Create DB record in Firestore with user information
-        task_data = firestore_db.create_video_task(
+        # Create DB record in PostgreSQL with user information
+        task_data = postgres_db.create_video_task(
             video_id, 
             filename, 
             current_user['uid'], 
             current_user['email'], 
             "in_queue"
         )
-        print(f"Task created in Firestore: {video_id} for user: {current_user['email']}")
+        print(f"Task created in PostgreSQL: {video_id} for user: {current_user['email']}")
+        
+        # Notify via WebSocket
+        if websocket_manager:
+            websocket_manager.notify_task_update(current_user['uid'], {
+                'video_id': video_id,
+                'status': 'in_queue',
+                'filename': filename
+            })
 
         # Trigger worker processing with enhanced error handling
         trigger_success = trigger_worker_processing(
@@ -453,7 +491,7 @@ def assemble_file():
             video_key = s3_storage.upload_video(file_obj, video_id, original_filename)
         
         # Create task in Firestore
-        task_data = firestore_db.create_video_task(
+        task_data = postgres_db.create_video_task(
             video_id, 
             original_filename, 
             current_user['uid'], 
@@ -498,9 +536,9 @@ def list_videos():
         
         # Regular users see only their videos, admins can see all
         if is_super_admin(current_user['email']):
-            tasks = firestore_db.get_all_video_tasks()
+            tasks = postgres_db.get_all_video_tasks()
         else:
-            tasks = firestore_db.get_user_video_tasks(current_user['uid'])
+            tasks = postgres_db.get_user_video_tasks(current_user['uid'])
         # Gracefully handle unavailable Firestore (None) or no tasks
         if not tasks:
             return jsonify({
@@ -552,7 +590,7 @@ def get_video_status(video_id):
         if not current_user:
             return jsonify({"error": "Authentication required"}), 401
             
-        task = firestore_db.get_video_task(video_id)
+        task = postgres_db.get_video_task(video_id)
         
         if not task:
             return jsonify({"error": "Video not found"}), 404
@@ -582,7 +620,7 @@ def download_pdf(video_id):
         if not current_user:
             return jsonify({"error": "Authentication required"}), 401
             
-        task = firestore_db.get_video_task(video_id)
+        task = postgres_db.get_video_task(video_id)
         
         if not task:
             return jsonify({"error": "Video not found"}), 404
@@ -613,7 +651,7 @@ def download_pdf(video_id):
 def admin_get_all_videos():
     """Admin endpoint to get all videos from all users"""
     try:
-        tasks = firestore_db.get_all_video_tasks()
+        tasks = postgres_db.get_all_video_tasks()
         # Gracefully handle unavailable Firestore (None) or no tasks
         if not tasks:
             return jsonify([])
@@ -644,13 +682,13 @@ def admin_delete_video(video_id):
     """Admin endpoint to delete a video and its associated files"""
     try:
         # Delete from Firestore
-        firestore_success = firestore_db.delete_video_task(video_id)
+        firestore_success = postgres_db.delete_video_task(video_id)
         
         # Delete from S3 (video, subtitles, PDF)
         s3_deletions = []
         try:
             # Get video task to find filename
-            task = firestore_db.get_video_task(video_id)
+            task = postgres_db.get_video_task(video_id)
             if task and task.get('filename'):
                 filename = task['filename']
                 
@@ -689,7 +727,7 @@ def admin_delete_video(video_id):
 def admin_get_stats():
     """Admin endpoint to get system statistics"""
     try:
-        stats = firestore_db.get_admin_stats()
+        stats = postgres_db.get_admin_stats()
         return jsonify(stats)
     
     except Exception as e:
@@ -943,6 +981,40 @@ def check_worker_health():
             "timestamp": datetime.datetime.now().isoformat()
         }), 503
 
+@app.route("/internal/task-update", methods=["POST"])
+def internal_task_update():
+    """
+    Internal endpoint for worker to notify about task updates
+    This triggers WebSocket notifications to clients
+    """
+    try:
+        data = request.get_json()
+        video_id = data.get('video_id')
+        status = data.get('status')
+        user_id = data.get('user_id')
+        
+        if not video_id or not status or not user_id:
+            return jsonify({"error": "Missing required fields"}), 400
+        
+        # Get full task data from database
+        task = postgres_db.get_video_task(video_id)
+        
+        if not task:
+            return jsonify({"error": "Task not found"}), 404
+        
+        # Send WebSocket notification
+        if websocket_manager:
+            websocket_manager.notify_task_update(user_id, task)
+        
+        return jsonify({
+            "success": True,
+            "message": "WebSocket notification sent"
+        })
+        
+    except Exception as e:
+        print(f"Error in internal task update: {e}")
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == "__main__":
     # Ensure super admins exist in database on startup
     admin_manager.ensure_super_admins_exist()
@@ -951,5 +1023,9 @@ if __name__ == "__main__":
     app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024 * 1024  # 5GB max file size
     app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0  # Disable caching for large files
     
-    app.run(host="0.0.0.0", port=5001, debug=False, threaded=True)
+    # Run with WebSocket support
+    if websocket_manager and websocket_manager.socketio:
+        websocket_manager.socketio.run(app, host="0.0.0.0", port=5001, debug=False, allow_unsafe_werkzeug=True)
+    else:
+        app.run(host="0.0.0.0", port=5001, debug=False, threaded=True)
 

@@ -7,8 +7,13 @@ python-dotenv==1.0.0
 PyJWT>=2.8.0
 # For S3 integration
 boto3>=1.26.0
-# For Firestore integration
+# For Firebase Authentication (keep for auth only)
 firebase-admin>=6.0.0
+# For PostgreSQL database
+psycopg2-binary>=2.9.9
+# For WebSocket real-time updates
+flask-socketio>=5.3.0
+python-socketio>=5.9.0
 # For subtitle generation and video processing
 moviepy==1.0.3
 imageio==2.34.1

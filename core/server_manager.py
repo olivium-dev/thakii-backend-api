@@ -2,17 +2,18 @@
 """
 Server Manager for managing multiple backend processing servers
 Handles server registration, health checks, and workload distribution
+Uses PostgreSQL instead of Firestore
 """
 import datetime
 from typing import List, Dict, Any, Optional
-from core.firestore_db import firestore_db
+from core.postgres_db import postgres_db
 import requests
 import time
 
 class ServerManager:
     def __init__(self):
         """Initialize Server Manager"""
-        self.collection_name = 'processing_servers'
+        pass
     
     def add_server(self, server_name: str, server_url: str, server_type: str = 'processing', description: str = '') -> Dict[str, Any]:
         """
@@ -41,23 +42,15 @@ class ServerManager:
             # Test server connectivity
             health_status = self._check_server_health(server_url)
             
-            server_data = {
-                'name': server_name,
-                'url': server_url,
-                'type': server_type,
-                'description': description,
-                'status': 'active' if health_status['healthy'] else 'inactive',
-                'health_status': health_status,
-                'created_at': datetime.datetime.now().isoformat(),
-                'updated_at': datetime.datetime.now().isoformat(),
-                'total_jobs_processed': 0,
-                'current_load': 0,
-                'last_health_check': datetime.datetime.now().isoformat()
-            }
-            
-            # Add to Firestore
-            doc_ref = firestore_db.db.collection(self.collection_name).add(server_data)
-            server_data['id'] = doc_ref[1].id
+            # Create server in PostgreSQL
+            server_data = postgres_db.create_server(
+                name=server_name,
+                url=server_url,
+                server_type=server_type,
+                status='active' if health_status['healthy'] else 'inactive',
+                description=description,
+                health_status=health_status
+            )
             
             print(f"✅ Added server: {server_name} ({server_url})")
             return {
@@ -82,15 +75,23 @@ class ServerManager:
         """
         try:
             # Get server info before deleting
-            server_doc = firestore_db.db.collection(self.collection_name).document(server_id).get()
-            if not server_doc.exists:
+            all_servers = self.get_all_servers()
+            server_data = None
+            for server in all_servers:
+                if str(server.get('id')) == str(server_id):
+                    server_data = server
+                    break
+            
+            if not server_data:
                 return {'success': False, 'error': 'Server not found'}
             
-            server_data = server_doc.to_dict()
             server_name = server_data.get('name', 'Unknown')
             
-            # Delete from Firestore
-            firestore_db.db.collection(self.collection_name).document(server_id).delete()
+            # Delete from PostgreSQL
+            success = postgres_db.delete_server(server_id)
+            
+            if not success:
+                return {'success': False, 'error': 'Failed to delete server'}
             
             print(f"✅ Removed server: {server_name} (ID: {server_id})")
             return {
@@ -115,22 +116,27 @@ class ServerManager:
         """
         try:
             # Check if server exists
-            server_doc = firestore_db.db.collection(self.collection_name).document(server_id).get()
-            if not server_doc.exists:
+            all_servers = self.get_all_servers()
+            server_exists = any(str(s.get('id')) == str(server_id) for s in all_servers)
+            
+            if not server_exists:
                 return {'success': False, 'error': 'Server not found'}
             
-            # Add updated timestamp
-            updates['updated_at'] = datetime.datetime.now().isoformat()
+            # Update in PostgreSQL
+            success = postgres_db.update_server(server_id, updates)
             
-            # Update in Firestore
-            firestore_db.db.collection(self.collection_name).document(server_id).update(updates)
+            if not success:
+                return {'success': False, 'error': 'Failed to update server'}
             
             # Get updated server data
-            updated_doc = firestore_db.db.collection(self.collection_name).document(server_id).get()
-            updated_server = updated_doc.to_dict()
-            updated_server['id'] = server_id
+            updated_servers = self.get_all_servers()
+            updated_server = None
+            for server in updated_servers:
+                if str(server.get('id')) == str(server_id):
+                    updated_server = server
+                    break
             
-            print(f"✅ Updated server: {updated_server.get('name', 'Unknown')}")
+            print(f"✅ Updated server: {updated_server.get('name', 'Unknown') if updated_server else 'Unknown'}")
             return {
                 'success': True,
                 'server': updated_server,
@@ -149,16 +155,7 @@ class ServerManager:
             list: List of all servers
         """
         try:
-            servers_ref = firestore_db.db.collection(self.collection_name)
-            servers = []
-            
-            for doc in servers_ref.stream():
-                server_data = doc.to_dict()
-                server_data['id'] = doc.id
-                servers.append(server_data)
-            
-            # Sort by created_at
-            servers.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+            servers = postgres_db.get_all_servers()
             return servers
             
         except Exception as e:
@@ -192,10 +189,10 @@ class ServerManager:
                 new_status = 'active' if health_status['healthy'] else 'inactive'
                 
                 # Update server status in database
-                self.update_server(server['id'], {
+                self.update_server(str(server['id']), {
                     'status': new_status,
                     'health_status': health_status,
-                    'last_health_check': datetime.datetime.now().isoformat()
+                    'last_health_check': datetime.datetime.now()
                 })
                 
                 if health_status['healthy']:

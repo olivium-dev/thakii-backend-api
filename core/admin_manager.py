@@ -2,16 +2,15 @@
 """
 Admin Manager for managing admin users
 Handles admin registration, removal, and permissions management
+Uses PostgreSQL instead of Firestore
 """
 import datetime
 from typing import List, Dict, Any, Optional
-from core.firestore_db import firestore_db
+from core.postgres_db import postgres_db
 
 class AdminManager:
     def __init__(self):
         """Initialize Admin Manager"""
-        self.collection_name = 'admin_users'
-        
         # Super admins are always admin (cannot be removed)
         self.SUPER_ADMINS = ['ouday.khaled@gmail.com', 'appsaawt@gmail.com']
     
@@ -34,27 +33,19 @@ class AdminManager:
                 return {'success': False, 'error': 'Invalid email format'}
             
             # Check if admin already exists
-            existing_admins = self.get_all_admins()
-            for admin in existing_admins:
-                if admin.get('email') == email:
-                    return {'success': False, 'error': f'Admin with email "{email}" already exists'}
+            existing_admin = postgres_db.get_admin_by_email(email)
+            if existing_admin:
+                return {'success': False, 'error': f'Admin with email "{email}" already exists'}
             
-            admin_data = {
-                'email': email,
-                'role': role,
-                'status': 'active',
-                'is_super_admin': email in self.SUPER_ADMINS,
-                'description': description,
-                'added_by': added_by,
-                'created_at': datetime.datetime.now().isoformat(),
-                'updated_at': datetime.datetime.now().isoformat(),
-                'last_login': None,
-                'login_count': 0
-            }
-            
-            # Add to Firestore
-            doc_ref = firestore_db.db.collection(self.collection_name).add(admin_data)
-            admin_data['id'] = doc_ref[1].id
+            # Create admin in PostgreSQL
+            admin_data = postgres_db.create_admin(
+                email=email,
+                role=role,
+                status='active',
+                is_super_admin=(email in self.SUPER_ADMINS),
+                description=description,
+                added_by=added_by
+            )
             
             print(f"✅ Added admin: {email} (Role: {role})")
             return {
@@ -79,12 +70,19 @@ class AdminManager:
             dict: Result of the operation
         """
         try:
-            # Get admin info before deleting
-            admin_doc = firestore_db.db.collection(self.collection_name).document(admin_id).get()
-            if not admin_doc.exists:
+            # Get admin info before updating
+            # We need to get admin by id first, but we only have get_admin_by_email
+            # So we'll get all admins and find by id
+            all_admins = self.get_all_admins()
+            admin_data = None
+            for admin in all_admins:
+                if str(admin.get('id')) == str(admin_id):
+                    admin_data = admin
+                    break
+            
+            if not admin_data:
                 return {'success': False, 'error': 'Admin not found'}
             
-            admin_data = admin_doc.to_dict()
             admin_email = admin_data.get('email', 'Unknown')
             
             # Prevent removal of super admins
@@ -92,11 +90,10 @@ class AdminManager:
                 return {'success': False, 'error': 'Cannot remove super admin'}
             
             # Archive instead of delete (for audit trail)
-            firestore_db.db.collection(self.collection_name).document(admin_id).update({
+            postgres_db.update_admin(admin_id, {
                 'status': 'removed',
                 'removed_by': removed_by,
-                'removed_at': datetime.datetime.now().isoformat(),
-                'updated_at': datetime.datetime.now().isoformat()
+                'removed_at': datetime.datetime.now()
             })
             
             print(f"✅ Removed admin: {admin_email} (ID: {admin_id})")
@@ -122,31 +119,40 @@ class AdminManager:
             dict: Result of the operation
         """
         try:
-            # Check if admin exists
-            admin_doc = firestore_db.db.collection(self.collection_name).document(admin_id).get()
-            if not admin_doc.exists:
-                return {'success': False, 'error': 'Admin not found'}
+            # Get all admins and find by id
+            all_admins = self.get_all_admins()
+            admin_data = None
+            for admin in all_admins:
+                if str(admin.get('id')) == str(admin_id):
+                    admin_data = admin
+                    break
             
-            admin_data = admin_doc.to_dict()
+            if not admin_data:
+                return {'success': False, 'error': 'Admin not found'}
             
             # Prevent modification of super admin status
             if 'is_super_admin' in updates and admin_data.get('email') in self.SUPER_ADMINS:
                 del updates['is_super_admin']
             
             # Add metadata
-            updates['updated_at'] = datetime.datetime.now().isoformat()
             if updated_by:
                 updates['updated_by'] = updated_by
             
-            # Update in Firestore
-            firestore_db.db.collection(self.collection_name).document(admin_id).update(updates)
+            # Update in PostgreSQL
+            success = postgres_db.update_admin(admin_id, updates)
+            
+            if not success:
+                return {'success': False, 'error': 'Failed to update admin'}
             
             # Get updated admin data
-            updated_doc = firestore_db.db.collection(self.collection_name).document(admin_id).get()
-            updated_admin = updated_doc.to_dict()
-            updated_admin['id'] = admin_id
+            updated_admins = self.get_all_admins()
+            updated_admin = None
+            for admin in updated_admins:
+                if str(admin.get('id')) == str(admin_id):
+                    updated_admin = admin
+                    break
             
-            print(f"✅ Updated admin: {updated_admin.get('email', 'Unknown')}")
+            print(f"✅ Updated admin: {updated_admin.get('email', 'Unknown') if updated_admin else 'Unknown'}")
             return {
                 'success': True,
                 'admin': updated_admin,
@@ -165,16 +171,7 @@ class AdminManager:
             list: List of all admin users
         """
         try:
-            admins_ref = firestore_db.db.collection(self.collection_name)
-            admins = []
-            
-            for doc in admins_ref.stream():
-                admin_data = doc.to_dict()
-                admin_data['id'] = doc.id
-                admins.append(admin_data)
-            
-            # Sort by created_at
-            admins.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+            admins = postgres_db.get_all_admins()
             return admins
             
         except Exception as e:
@@ -207,10 +204,9 @@ class AdminManager:
                 return True
             
             # Check in database
-            active_admins = self.get_active_admins()
-            for admin in active_admins:
-                if admin.get('email') == email:
-                    return True
+            admin_data = postgres_db.get_admin_by_email(email)
+            if admin_data and admin_data.get('status') == 'active':
+                return True
             
             return False
             
@@ -241,18 +237,16 @@ class AdminManager:
             dict: Result of the operation
         """
         try:
-            active_admins = self.get_active_admins()
-            for admin in active_admins:
-                if admin.get('email') == email:
-                    updates = {
-                        'last_login': datetime.datetime.now().isoformat(),
-                        'login_count': admin.get('login_count', 0) + 1,
-                        'updated_at': datetime.datetime.now().isoformat()
-                    }
-                    
-                    return self.update_admin(admin['id'], updates)
+            admin_data = postgres_db.get_admin_by_email(email)
+            if not admin_data or admin_data.get('status') != 'active':
+                return {'success': False, 'error': 'Admin not found'}
             
-            return {'success': False, 'error': 'Admin not found'}
+            updates = {
+                'last_login': datetime.datetime.now(),
+                'login_count': admin_data.get('login_count', 0) + 1
+            }
+            
+            return self.update_admin(str(admin_data['id']), updates)
             
         except Exception as e:
             print(f"❌ Error updating login info: {e}")
@@ -264,11 +258,9 @@ class AdminManager:
         Called during startup to initialize super admins
         """
         try:
-            existing_admins = self.get_all_admins()
-            existing_emails = [admin.get('email') for admin in existing_admins]
-            
             for super_admin_email in self.SUPER_ADMINS:
-                if super_admin_email not in existing_emails:
+                existing_admin = postgres_db.get_admin_by_email(super_admin_email)
+                if not existing_admin:
                     self.add_admin(
                         email=super_admin_email,
                         role='super_admin',

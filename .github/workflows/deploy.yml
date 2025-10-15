@@ -50,8 +50,14 @@ jobs:
             git fetch origin
             git pull origin \$BRANCH_NAME
             
-            # Install dependencies
-            pip3 install --user -r requirements.txt --break-system-packages
+            # Install dependencies only if needed
+            echo "Checking if key packages are installed..."
+            if pip3 show Flask psycopg2-binary boto3 > /dev/null 2>&1; then
+              echo "✅ Key packages already installed, skipping pip install"
+            else
+              echo "📦 Installing missing packages..."
+              pip3 install --user -r requirements.txt --break-system-packages
+            fi
             
             # Restart service
             sudo systemctl restart thakii-backend

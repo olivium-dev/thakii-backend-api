@@ -41,6 +41,7 @@ runs:
     - name: Configure SSH
       run: |
         echo "⚙️  Configuring SSH for Cloudflare tunnel..."
+        mkdir -p ~/.ssh
         cat >> ~/.ssh/config << 'EOF'
         Host ${{ inputs.host-alias }}
           HostName ${{ inputs.server-hostname }}

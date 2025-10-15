@@ -1,0 +1,69 @@
+name: 'Setup Cloudflare SSH'
+description: 'Sets up SSH connection through Cloudflare tunnel'
+inputs:
+  ssh-private-key:
+    description: 'SSH private key for authentication'
+    required: true
+  server-hostname:
+    description: 'Cloudflare tunnel hostname (e.g., vps-71.fds-1.com)'
+    required: true
+  server-user:
+    description: 'SSH username'
+    required: true
+    default: 'ec2-user'
+  host-alias:
+    description: 'SSH host alias to use in commands'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install cloudflared
+      run: |
+        echo "📥 Installing cloudflared..."
+        wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared-linux-amd64.deb
+        cloudflared --version
+        echo "✅ cloudflared installed"
+      shell: bash
+    
+    - name: Setup SSH key
+      run: |
+        echo "🔑 Setting up SSH key..."
+        mkdir -p ~/.ssh
+        echo "${{ inputs.ssh-private-key }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        echo "✅ SSH key configured"
+      shell: bash
+    
+    - name: Configure SSH
+      run: |
+        echo "⚙️  Configuring SSH for Cloudflare tunnel..."
+        cat >> ~/.ssh/config << 'EOF'
+        Host ${{ inputs.host-alias }}
+          HostName ${{ inputs.server-hostname }}
+          User ${{ inputs.server-user }}
+          ProxyCommand cloudflared access tcp --hostname ${{ inputs.server-hostname }}
+          StrictHostKeyChecking no
+          UserKnownHostsFile /dev/null
+          ServerAliveInterval 30
+          ServerAliveCountMax 3
+          ConnectTimeout 30
+        EOF
+        echo "✅ SSH config created"
+        echo ""
+        echo "📋 SSH configuration:"
+        cat ~/.ssh/config
+      shell: bash
+    
+    - name: Test SSH connection
+      run: |
+        echo "🔍 Testing SSH connection..."
+        if ssh ${{ inputs.host-alias }} "echo '✅ SSH connection successful'"; then
+          echo "🎉 SSH tunnel is working!"
+        else
+          echo "❌ SSH connection failed"
+          exit 1
+        fi
+      shell: bash
+

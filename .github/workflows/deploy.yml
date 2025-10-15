@@ -20,34 +20,44 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
       
-      - name: Install curl and jq
-        run: |
-          sudo apt-get update && sudo apt-get install -y curl jq
+      - name: Setup SSH Connection via Cloudflare
+        uses: ./.github/actions/cloudflare-ssh
+        with:
+          ssh-private-key: ${{ secrets.THAKII_SSH_PRIVATE_KEY }}
+          server-hostname: ${{ env.SERVER_HOST }}
+          server-user: ${{ env.SERVER_USER }}
+          host-alias: 'thakii-server'
       
       - name: Deploy to server
-        env:
-          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
         run: |
-          # Deploy backend via webhook
-          echo "=== Deploying Backend via Webhook ==="
-          
-          RESPONSE=$(curl -s -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $WEBHOOK_SECRET" \
-            -H "Content-Type: application/json" \
-            https://thakii-02.fanusdigital.site/webhook/deploy/backend)
-          
-          HTTP_CODE="${RESPONSE: -3}"
-          BODY="${RESPONSE%???}"
-          
-          echo "HTTP Status: $HTTP_CODE"
-          echo "Response: $BODY"
-          
-          if [ "$HTTP_CODE" = "200" ]; then
-            echo "✅ Backend deployment successful"
-          else
-            echo "❌ Backend deployment failed"
-            exit 1
-          fi
+          ssh thakii-server << 'EOF'
+            set -e
+            
+            echo "=== Deploying Backend API ==="
+            cd $DEPLOY_PATH || exit 1
+            
+            # Get current branch name
+            BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)
+            echo "Current branch: $BRANCH_NAME"
+            
+            # Fetch and pull latest changes
+            git fetch origin
+            git pull origin $BRANCH_NAME
+            
+            # Install dependencies
+            pip3 install --user -r requirements.txt
+            
+            # Restart service
+            sudo systemctl restart thakii-backend
+            
+            # Check service status
+            sleep 3
+            sudo systemctl status thakii-backend --no-pager
+            
+            echo "=== Backend deployment complete ==="
+          EOF
+        env:
+          DEPLOY_PATH: ${{ env.DEPLOY_PATH }}
       
       - name: Verify deployment
         run: |
@@ -75,4 +85,3 @@ jobs:
           else
             echo "❌ Deployment failed"
           fi
-

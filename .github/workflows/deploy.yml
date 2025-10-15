@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 env:
-  SERVER_HOST: 192.168.2.71
+  SERVER_HOST: vps-71.fds-1.com
   SERVER_USER: ec2-user
   DEPLOY_PATH: /home/ec2-user/thakii-backend-api
 
@@ -20,15 +20,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
       
-      - name: Install sshpass
-        run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Install sshpass and cloudflared
+        run: |
+          sudo apt-get update && sudo apt-get install -y sshpass
+          # Install cloudflared for Cloudflare tunnel access
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared-linux-amd64.deb
       
       - name: Deploy to server
         env:
           SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
         run: |
-          # Deploy backend
-          sshpass -p "$SERVER_PASSWORD" ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_HOST << 'EOF'
+          # Deploy backend via Cloudflare tunnel
+          sshpass -p "$SERVER_PASSWORD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 $SERVER_USER@$SERVER_HOST << 'EOF'
             set -e
             
             echo "=== Deploying Backend API ==="
@@ -60,7 +64,7 @@ jobs:
         env:
           SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
         run: |
-          sshpass -p "$SERVER_PASSWORD" ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_HOST << 'EOF'
+          sshpass -p "$SERVER_PASSWORD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 $SERVER_USER@$SERVER_HOST << 'EOF'
             # Wait for service to be ready
             sleep 5
             

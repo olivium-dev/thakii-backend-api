@@ -43,6 +43,9 @@ jobs:
             BRANCH_NAME=\$(git rev-parse --abbrev-ref HEAD)
             echo "Current branch: \$BRANCH_NAME"
             
+            # Stash any local changes
+            git stash
+            
             # Fetch and pull latest changes
             git fetch origin
             git pull origin \$BRANCH_NAME

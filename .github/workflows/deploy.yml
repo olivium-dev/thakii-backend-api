@@ -20,65 +20,52 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
       
-      - name: Install sshpass and cloudflared
+      - name: Install curl and jq
         run: |
-          sudo apt-get update && sudo apt-get install -y sshpass
-          # Install cloudflared for Cloudflare tunnel access
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared-linux-amd64.deb
+          sudo apt-get update && sudo apt-get install -y curl jq
       
       - name: Deploy to server
         env:
-          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
         run: |
-          # Deploy backend via Cloudflare tunnel
-          sshpass -p "$SERVER_PASSWORD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 $SERVER_USER@$SERVER_HOST << 'EOF'
-            set -e
-            
-            echo "=== Deploying Backend API ==="
-            cd $DEPLOY_PATH || exit 1
-            
-            # Get current branch name from GitHub
-            BRANCH_NAME="${GITHUB_REF#refs/heads/}"
-            echo "Deploying branch: $BRANCH_NAME"
-            
-            # Fetch and checkout branch
-            git fetch origin
-            git checkout $BRANCH_NAME
-            git pull origin $BRANCH_NAME
-            
-            # Install dependencies
-            pip3 install --user -r requirements.txt
-            
-            # Restart service
-            sudo systemctl restart thakii-backend
-            
-            # Check service status
-            sleep 3
-            sudo systemctl status thakii-backend --no-pager
-            
-            echo "=== Backend deployment complete ==="
-          EOF
+          # Deploy backend via webhook
+          echo "=== Deploying Backend via Webhook ==="
+          
+          RESPONSE=$(curl -s -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $WEBHOOK_SECRET" \
+            -H "Content-Type: application/json" \
+            https://thakii-02.fanusdigital.site/webhook/deploy/backend)
+          
+          HTTP_CODE="${RESPONSE: -3}"
+          BODY="${RESPONSE%???}"
+          
+          echo "HTTP Status: $HTTP_CODE"
+          echo "Response: $BODY"
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Backend deployment successful"
+          else
+            echo "❌ Backend deployment failed"
+            exit 1
+          fi
       
       - name: Verify deployment
-        env:
-          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
         run: |
-          sshpass -p "$SERVER_PASSWORD" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 $SERVER_USER@$SERVER_HOST << 'EOF'
-            # Wait for service to be ready
-            sleep 5
-            
-            # Check health endpoint
-            HEALTH_CHECK=$(curl -s http://localhost:5001/health | jq -r '.status')
-            
-            if [ "$HEALTH_CHECK" == "healthy" ]; then
-              echo "✅ Backend is healthy"
-              exit 0
-            else
-              echo "❌ Backend health check failed"
-              exit 1
-            fi
-          EOF
+          # Wait for service to be ready
+          sleep 10
+          
+          # Check health endpoint via HTTPS
+          echo "=== Verifying Backend Health ==="
+          HEALTH_CHECK=$(curl -s https://thakii-02.fanusdigital.site/thakii-be/health | jq -r '.status')
+          
+          echo "Health check response: $HEALTH_CHECK"
+          
+          if [ "$HEALTH_CHECK" == "healthy" ]; then
+            echo "✅ Backend is healthy"
+          else
+            echo "❌ Backend health check failed"
+            exit 1
+          fi
       
       - name: Notify deployment status
         if: always()

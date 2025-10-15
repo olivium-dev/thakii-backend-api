@@ -43,7 +43,7 @@ runs:
         Host ${{ inputs.host-alias }}
           HostName ${{ inputs.server-hostname }}
           User ${{ inputs.server-user }}
-          ProxyCommand cloudflared access tcp --hostname ${{ inputs.server-hostname }} --protocol h2mux
+          ProxyCommand cloudflared access tcp --hostname ${{ inputs.server-hostname }}
           StrictHostKeyChecking no
           UserKnownHostsFile /dev/null
           ServerAliveInterval 30

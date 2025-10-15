@@ -51,7 +51,7 @@ jobs:
             git pull origin \$BRANCH_NAME
             
             # Install dependencies
-            pip3 install --user -r requirements.txt
+            pip3 install --user -r requirements.txt --break-system-packages
             
             # Restart service
             sudo systemctl restart thakii-backend

@@ -1,8 +1,8 @@
 name: 'Setup Cloudflare SSH'
 description: 'Sets up SSH connection through Cloudflare tunnel'
 inputs:
-  ssh-private-key:
-    description: 'SSH private key for authentication'
+  ssh-password:
+    description: 'SSH password for authentication'
     required: true
   server-hostname:
     description: 'Cloudflare tunnel hostname (e.g., vps-71.fds-1.com)'
@@ -30,13 +30,12 @@ runs:
         echo "✅ cloudflared installed with IPv6 disabled"
       shell: bash
     
-    - name: Setup SSH key
+    - name: Install sshpass
       run: |
-        echo "🔑 Setting up SSH key..."
-        mkdir -p ~/.ssh
-        echo "${{ inputs.ssh-private-key }}" > ~/.ssh/id_rsa
-        chmod 600 ~/.ssh/id_rsa
-        echo "✅ SSH key configured"
+        echo "📦 Installing sshpass..."
+        sudo apt-get update -qq
+        sudo apt-get install -y sshpass
+        echo "✅ sshpass installed"
       shell: bash
     
     - name: Configure SSH
@@ -47,8 +46,7 @@ runs:
           HostName ${{ inputs.server-hostname }}
           User ${{ inputs.server-user }}
           ProxyCommand cloudflared access tcp --hostname ${{ inputs.server-hostname }}
-          IdentityFile ~/.ssh/id_rsa
-          PreferredAuthentications publickey
+          PreferredAuthentications password
           StrictHostKeyChecking no
           UserKnownHostsFile /dev/null
           ServerAliveInterval 30
@@ -65,7 +63,7 @@ runs:
     - name: Test SSH connection
       run: |
         echo "🔍 Testing SSH connection..."
-        if ssh ${{ inputs.host-alias }} "echo '✅ SSH connection successful'"; then
+        if sshpass -p "${{ inputs.ssh-password }}" ssh ${{ inputs.host-alias }} "echo '✅ SSH connection successful'"; then
           echo "🎉 SSH tunnel is working!"
         else
           echo "❌ SSH connection failed"

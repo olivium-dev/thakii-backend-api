@@ -551,8 +551,10 @@ def list_videos():
         # Convert tasks to the expected format
         video_list = []
         for task in tasks:
-            # Use the document ID from Firestore as the video ID
-            task_id = task.get("id") or task.get("video_id")
+            # CRITICAL FIX: Use video_id as primary identifier, NOT the auto-generated id column
+            # The PostgreSQL table has both 'id' (auto-generated UUID) and 'video_id' (actual identifier)
+            # We must use 'video_id' which is used in S3, downloads, and all other operations
+            task_id = task.get("video_id") or task.get("id")
             video_list.append({
                 "id": task_id,
                 "video_id": task_id,  # For compatibility
@@ -659,7 +661,8 @@ def admin_get_all_videos():
         # Convert tasks to the expected format
         video_list = []
         for task in tasks:
-            task_id = task.get("id") or task.get("video_id")
+            # CRITICAL FIX: Use video_id as primary identifier
+            task_id = task.get("video_id") or task.get("id")
             video_list.append({
                 "id": task_id,
                 "video_name": task.get("filename"),

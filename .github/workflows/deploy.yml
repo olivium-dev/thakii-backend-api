@@ -5,7 +5,7 @@ name: Deploy Backend to Server
     branches:
       - main
       - feature/postgres-migration
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 env:
   SERVER_HOST: vps-71.fds-1.com
@@ -68,8 +68,6 @@ jobs:
             
             echo "=== Backend deployment complete ==="
           EOF
-        env:
-          DEPLOY_PATH: ${{ env.DEPLOY_PATH }}
       
       - name: Verify deployment
         run: |

@@ -47,6 +47,8 @@ runs:
           HostName ${{ inputs.server-hostname }}
           User ${{ inputs.server-user }}
           ProxyCommand cloudflared access tcp --hostname ${{ inputs.server-hostname }}
+          IdentityFile ~/.ssh/id_rsa
+          PreferredAuthentications publickey
           StrictHostKeyChecking no
           UserKnownHostsFile /dev/null
           ServerAliveInterval 30

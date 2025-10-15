@@ -43,7 +43,7 @@ runs:
         Host ${{ inputs.host-alias }}
           HostName ${{ inputs.server-hostname }}
           User ${{ inputs.server-user }}
-          ProxyCommand cloudflared access tcp --hostname ${{ inputs.server-hostname }}
+          ProxyCommand cloudflared access tcp --hostname ${{ inputs.server-hostname }} --edge-ip-version 4
           StrictHostKeyChecking no
           UserKnownHostsFile /dev/null
           ServerAliveInterval 30

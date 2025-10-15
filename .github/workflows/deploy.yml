@@ -31,20 +31,21 @@ jobs:
       - name: Deploy to server
         env:
           SSH_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+          DEPLOY_PATH: ${{ env.DEPLOY_PATH }}
         run: |
-          sshpass -p "$SSH_PASSWORD" ssh thakii-server << 'EOF'
+          sshpass -p "$SSH_PASSWORD" ssh thakii-server << EOF
             set -e
             
             echo "=== Deploying Backend API ==="
             cd $DEPLOY_PATH || exit 1
             
             # Get current branch name
-            BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)
-            echo "Current branch: $BRANCH_NAME"
+            BRANCH_NAME=\$(git rev-parse --abbrev-ref HEAD)
+            echo "Current branch: \$BRANCH_NAME"
             
             # Fetch and pull latest changes
             git fetch origin
-            git pull origin $BRANCH_NAME
+            git pull origin \$BRANCH_NAME
             
             # Install dependencies
             pip3 install --user -r requirements.txt

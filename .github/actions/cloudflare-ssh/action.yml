@@ -43,12 +43,13 @@ runs:
         Host ${{ inputs.host-alias }}
           HostName ${{ inputs.server-hostname }}
           User ${{ inputs.server-user }}
-          ProxyCommand cloudflared access tcp --hostname ${{ inputs.server-hostname }}
+          ProxyCommand cloudflared access tcp --hostname ${{ inputs.server-hostname }} --protocol h2mux
           StrictHostKeyChecking no
           UserKnownHostsFile /dev/null
           ServerAliveInterval 30
           ServerAliveCountMax 3
           ConnectTimeout 30
+          AddressFamily inet
         EOF
         echo "✅ SSH config created"
         echo ""

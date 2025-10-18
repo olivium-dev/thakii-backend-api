@@ -1,0 +1,32 @@
+{
+  "timestamp": "2025-10-17T16:49:29.098366",
+  "tests": [
+    {
+      "name": "Token Generation",
+      "status": "PASS",
+      "message": "Token: eyJhbGciOiJIUzI1NiIsInR5cCI6Ik...",
+      "details": {}
+    },
+    {
+      "name": "Video Upload",
+      "status": "PASS",
+      "message": "Video ID: 62518eb4-4926-4024-a682-3970d3a3b403",
+      "details": {
+        "video_id": "62518eb4-4926-4024-a682-3970d3a3b403",
+        "s3_key": "videos/62518eb4-4926-4024-a682-3970d3a3b403/input_4.mp4"
+      }
+    },
+    {
+      "name": "Status Monitoring",
+      "status": "FAIL",
+      "message": "Timeout after 300s",
+      "details": {
+        "seen_statuses": [
+          "processing"
+        ],
+        "last_status": "processing"
+      }
+    }
+  ],
+  "overall_status": "FAILED"
+}

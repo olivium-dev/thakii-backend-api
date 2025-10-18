@@ -82,3 +82,6 @@ echo "Password: P@ssw0rd768_DB"
 echo ""
 echo "Next step: Run setup_postgres.sql to create schema"
 
+
+
+

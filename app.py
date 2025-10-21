@@ -14,10 +14,11 @@ from core.push_notification_service import push_service
 from core.server_manager import server_manager
 from core.admin_manager import admin_manager
 from core.websocket_manager import init_websocket, get_websocket_manager
+from core.worker_manager import worker_manager
 
 load_dotenv()
 
-# Worker Service Configuration
+# Worker Service Configuration (Legacy - kept for backwards compatibility)
 WORKER_SERVICE_URL = os.getenv('WORKER_SERVICE_URL', 'https://thakii-02.fanusdigital.site/thakii-worker')
 
 app = Flask(__name__)
@@ -45,91 +46,54 @@ s3_storage = S3Storage()
 websocket_manager = init_websocket(app)
 
 def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key: str) -> bool:
-    """Trigger worker processing via HTTP with enhanced error handling"""
-    import requests
-    try:
-        worker_url = WORKER_SERVICE_URL
-        payload = {
-            "video_id": video_id,
-            "user_id": user_id,
-            "filename": filename,
-            "s3_key": s3_key
-        }
+    """
+    Trigger worker processing via HTTP with primary/fallback support
+    Uses worker_manager for intelligent routing and automatic failover
+    """
+    payload = {
+        "video_id": video_id,
+        "user_id": user_id,
+        "filename": filename,
+        "s3_key": s3_key
+    }
+    
+    # Trigger worker with automatic fallback
+    result = worker_manager.trigger_with_fallback(payload)
+    
+    if result['success']:
+        print(f"✅ Worker triggered successfully: {video_id}")
+        print(f"   Worker used: {result['worker_used']}")
         
-        print(f"🚀 Triggering worker for video {video_id}")
-        print(f"   Worker URL: {worker_url}/process-from-s3")
-        print(f"   Payload: {payload}")
+        # Update database with worker information
+        postgres_db.update_video_task(video_id, {
+            'processed_by_worker': result['worker_used'],
+            'processed_by_worker_url': result.get('worker_url', ''),
+            'worker_attempts': 1
+        })
         
-        response = requests.post(
-            f"{worker_url}/process-from-s3",
-            json=payload,
-            timeout=30,  # Reduced timeout for initial trigger
-            headers={'Content-Type': 'application/json'}
-        )
+        return True
+    else:
+        print(f"❌ All workers failed for video {video_id}")
+        print(f"   Error: {result['error']}")
         
-        print(f"📊 Worker response: {response.status_code}")
-        
-        if response.status_code == 201:
-            print(f"✅ Worker triggered successfully: {video_id}")
-            return True
-        else:
-            print(f"❌ Worker trigger failed: {response.status_code}")
-            print(f"   Response: {response.text}")
-            
-            # Update task status to failed
-            postgres_db.update_video_task(video_id, {
-                'status': 'failed',
-                'error_message': f'Worker trigger failed: HTTP {response.status_code}'
-            })
-            # Notify via WebSocket
-            if websocket_manager:
-                websocket_manager.notify_task_update(user_id, {
-                    'video_id': video_id,
-                    'status': 'failed',
-                    'error_message': f'Worker trigger failed: HTTP {response.status_code}'
-                })
-            return False
-            
-    except requests.exceptions.Timeout:
-        print(f"⏱️ Worker trigger timeout: {video_id}")
+        # Update task status to failed
+        error_message = result['error'] or 'Worker service unavailable'
         postgres_db.update_video_task(video_id, {
             'status': 'failed',
-            'error_message': 'Worker service timeout'
+            'error_message': error_message,
+            'processed_by_worker': result['worker_used'],
+            'processed_by_worker_url': result.get('worker_url', ''),
+            'worker_attempts': 1
         })
+        
+        # Notify via WebSocket
         if websocket_manager:
             websocket_manager.notify_task_update(user_id, {
                 'video_id': video_id,
                 'status': 'failed',
-                'error_message': 'Worker service timeout'
+                'error_message': error_message
             })
-        return False
         
-    except requests.exceptions.ConnectionError:
-        print(f"🔌 Worker service unavailable: {video_id}")
-        postgres_db.update_video_task(video_id, {
-            'status': 'failed',
-            'error_message': 'Worker service unavailable'
-        })
-        if websocket_manager:
-            websocket_manager.notify_task_update(user_id, {
-                'video_id': video_id,
-                'status': 'failed',
-                'error_message': 'Worker service unavailable'
-            })
-        return False
-        
-    except Exception as e:
-        print(f"💥 Worker trigger error: {video_id} - {e}")
-        postgres_db.update_video_task(video_id, {
-            'status': 'failed',
-            'error_message': f'Worker trigger failed: {str(e)}'
-        })
-        if websocket_manager:
-            websocket_manager.notify_task_update(user_id, {
-                'video_id': video_id,
-                'status': 'failed',
-                'error_message': f'Worker trigger failed: {str(e)}'
-            })
         return False
 
 @app.route("/health", methods=["GET"])
@@ -954,35 +918,44 @@ def get_admin_stats():
 @app.route("/worker-health", methods=["GET"])
 @require_admin
 def check_worker_health():
-    """Admin endpoint to check worker service health"""
-    import requests
+    """
+    Admin endpoint to check worker service health
+    Shows health status for both primary and fallback workers
+    """
     try:
-        worker_url = WORKER_SERVICE_URL
-        response = requests.get(f"{worker_url}/health", timeout=10)
+        # Get health status for all workers
+        health_data = worker_manager.get_all_workers_health()
         
-        if response.status_code == 200:
-            worker_data = response.json()
-            return jsonify({
-                "worker_status": "healthy",
-                "worker_url": worker_url,
-                "worker_response": worker_data,
-                "timestamp": datetime.datetime.now().isoformat()
-            })
+        # Determine overall status
+        healthy_count = health_data['summary']['healthy_workers']
+        total_count = health_data['summary']['total_workers']
+        
+        if healthy_count == 0:
+            overall_status = "critical"
+            status_code = 503
+        elif healthy_count < total_count:
+            overall_status = "degraded"
+            status_code = 200
         else:
-            return jsonify({
-                "worker_status": "unhealthy",
-                "worker_url": worker_url,
-                "error": f"HTTP {response.status_code}",
-                "timestamp": datetime.datetime.now().isoformat()
-            }), 503
+            overall_status = "healthy"
+            status_code = 200
+        
+        response_data = {
+            "overall_status": overall_status,
+            "workers": health_data['workers'],
+            "summary": health_data['summary'],
+            "priority_mode": health_data['priority_mode'],
+            "timestamp": health_data['timestamp']
+        }
+        
+        return jsonify(response_data), status_code
             
     except Exception as e:
         return jsonify({
-            "worker_status": "unavailable",
-            "worker_url": WORKER_SERVICE_URL,
+            "overall_status": "error",
             "error": str(e),
             "timestamp": datetime.datetime.now().isoformat()
-        }), 503
+        }), 500
 
 @app.route("/internal/task-update", methods=["POST"])
 def internal_task_update():

@@ -77,8 +77,8 @@ class S3Storage:
     def download_pdf(self, video_id):
         """Get PDF download URL from S3"""
         try:
-            # CRITICAL FIX: Use correct S3 path - pdfs/{video_id}.pdf, not pdfs/{video_id}/{video_id}.pdf
-            pdf_key = f"pdfs/{video_id}.pdf"
+            # Use correct S3 path structure: pdfs/{video_id}/{video_id}.pdf
+            pdf_key = f"pdfs/{video_id}/{video_id}.pdf"
             # Generate a presigned URL for downloading
             download_url = self.s3_client.generate_presigned_url(
                 'get_object',

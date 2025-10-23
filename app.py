@@ -328,54 +328,64 @@ def upload_video():
     if file.filename == "":
         return jsonify({"error": "No selected file"}), 400
     
-    # FULL UPLOAD PROCESS (KNOWN TO WORK FROM MANUAL TEST)
+    # STEP-BY-STEP RECURSION ISOLATION
     try:
-        print("🔍 STEP 1: Getting current user...")
         current_user = get_current_user()
         if not current_user:
             return jsonify({"error": "Authentication required"}), 401
-        print(f"✅ STEP 1 OK: User {current_user.get('email')}")
         
         video_id = str(uuid.uuid4())
         filename = file.filename
-        print(f"🔍 STEP 2: Generated video_id: {video_id}")
         
-        print("🔍 STEP 3: Uploading to S3...")
+        print("🔍 STEP 1: S3 upload (known to work)...")
         video_key = s3_storage.upload_video(file, video_id, filename)
-        print(f"✅ STEP 3 OK: S3 key: {video_key}")
+        print(f"✅ STEP 1 OK: S3 key: {video_key}")
         
-        print("🔍 STEP 4: Creating DB record...")
-        task_data = postgres_db.create_video_task(
-            video_id, 
-            filename, 
-            current_user['uid'], 
-            current_user['email'], 
-            "in_queue",
-            s3_key=video_key
-        )
-        print(f"✅ STEP 4 OK: DB record created")
+        # TEST EACH STEP INDIVIDUALLY TO FIND RECURSION SOURCE
+        print("🔍 STEP 2: Testing DB operation...")
+        try:
+            task_data = postgres_db.create_video_task(
+                video_id, 
+                filename, 
+                current_user['uid'], 
+                current_user['email'], 
+                "in_queue",
+                s3_key=video_key
+            )
+            print(f"✅ STEP 2 OK: DB record created")
+        except Exception as db_error:
+            print(f"❌ STEP 2 FAILED: DB error: {str(db_error)}")
+            return jsonify({"error": f"DB operation failed: {str(db_error)}"}), 500
         
-        print("🔍 STEP 5: WebSocket notification...")
-        if websocket_manager:
-            websocket_manager.notify_task_update(current_user['uid'], {
-                'video_id': video_id,
-                'status': 'in_queue',
-                'filename': filename
-            })
-        print(f"✅ STEP 5 OK: WebSocket notified")
+        print("🔍 STEP 3: Testing WebSocket notification...")
+        try:
+            if websocket_manager:
+                websocket_manager.notify_task_update(current_user['uid'], {
+                    'video_id': video_id,
+                    'status': 'in_queue',
+                    'filename': filename
+                })
+            print(f"✅ STEP 3 OK: WebSocket notified")
+        except Exception as ws_error:
+            print(f"❌ STEP 3 FAILED: WebSocket error: {str(ws_error)}")
+            return jsonify({"error": f"WebSocket failed: {str(ws_error)}"}), 500
 
-        print("🔍 STEP 6: Triggering worker...")
-        trigger_success = trigger_worker_processing(
-            video_id=video_id,
-            user_id=current_user['uid'],
-            filename=filename,
-            s3_key=video_key
-        )
-        print(f"✅ STEP 6 OK: Worker triggered: {trigger_success}")
+        print("🔍 STEP 4: Testing worker trigger...")
+        try:
+            trigger_success = trigger_worker_processing(
+                video_id=video_id,
+                user_id=current_user['uid'],
+                filename=filename,
+                s3_key=video_key
+            )
+            print(f"✅ STEP 4 OK: Worker triggered: {trigger_success}")
+        except Exception as worker_error:
+            print(f"❌ STEP 4 FAILED: Worker trigger error: {str(worker_error)}")
+            return jsonify({"error": f"Worker trigger failed: {str(worker_error)}"}), 500
 
         return jsonify({
             "video_id": video_id, 
-            "message": "Video uploaded to S3 and queued for processing",
+            "message": "All steps completed successfully!",
             "s3_key": video_key
         })
     

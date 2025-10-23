@@ -676,8 +676,9 @@ def download_pdf(video_id):
         if task.get("status") not in ["done", "completed"]:
             return jsonify({"error": "PDF not ready yet"}), 400
         
-        # Generate presigned URL for PDF download
-        download_url = s3_storage.download_pdf(video_id)
+        # Generate presigned URL for PDF download with original filename
+        original_filename = task.get("filename")
+        download_url = s3_storage.download_pdf(video_id, original_filename)
         
         return jsonify({
             "download_url": download_url,

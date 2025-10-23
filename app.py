@@ -370,13 +370,44 @@ def upload_video():
             print(f"❌ STEP 3 FAILED: WebSocket error: {str(ws_error)}")
             return jsonify({"error": f"WebSocket failed: {str(ws_error)}"}), 500
 
-        print("🔍 STEP 4: SKIPPING worker trigger (known to cause recursion)...")
-        print(f"✅ STEP 4 SKIPPED: Worker trigger bypassed to avoid recursion")
+        print("🔍 STEP 4: Direct worker trigger (bypassing problematic function)...")
+        try:
+            # Direct HTTP call to worker instead of using trigger_worker_processing
+            import requests
+            worker_url = "https://thakii-03.fanusdigital.site/process-from-s3"
+            
+            worker_payload = {
+                "video_id": video_id,
+                "user_id": current_user['uid'],
+                "filename": filename,
+                "s3_key": video_key
+            }
+            
+            print(f"   Making direct call to: {worker_url}")
+            response = requests.post(worker_url, json=worker_payload, timeout=10)
+            
+            if response.status_code == 200:
+                print(f"✅ STEP 4 OK: Direct worker trigger successful")
+                
+                # Update database with worker info
+                postgres_db.update_video_task(video_id, {
+                    'processed_by_worker': 'thakii-03-direct',
+                    'processed_by_worker_url': worker_url,
+                    'worker_attempts': 1
+                })
+                
+            else:
+                print(f"⚠️ STEP 4 WARNING: Worker returned {response.status_code}")
+                
+        except Exception as worker_error:
+            print(f"⚠️ STEP 4 WARNING: Direct worker call failed: {str(worker_error)}")
+            # Don't fail the upload - worker can be triggered manually later
 
         return jsonify({
             "video_id": video_id, 
-            "message": "All steps completed successfully!",
-            "s3_key": video_key
+            "message": "Video uploaded successfully! Processing started.",
+            "s3_key": video_key,
+            "status": "Upload complete - worker triggered directly"
         })
     
     except Exception as e:

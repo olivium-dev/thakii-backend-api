@@ -319,7 +319,8 @@ def upload_video():
             filename, 
             current_user['uid'], 
             current_user['email'], 
-            "in_queue"
+            "in_queue",
+            s3_key=video_key
         )
         print(f"Task created in PostgreSQL: {video_id} for user: {current_user['email']}")
         

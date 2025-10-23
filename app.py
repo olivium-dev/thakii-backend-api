@@ -311,12 +311,23 @@ def upload_video():
         
         print(f"🎯 UPLOAD DEBUG: video_id={video_id}, user={current_user.get('email', 'unknown')}")
         
-        # MINIMAL UPLOAD - SKIP S3 AND DB FOR NOW TO ISOLATE RECURSION
+        # TEST 1: ADD DATABASE OPERATION BACK
+        print("🔍 Testing database operation...")
+        task_data = postgres_db.create_video_task(
+            video_id, 
+            filename, 
+            current_user['uid'], 
+            current_user['email'], 
+            "in_queue"
+        )
+        print(f"✅ Database operation successful: {video_id}")
+        
         return jsonify({
             "video_id": video_id, 
-            "message": "MINIMAL UPLOAD TEST - NO S3/DB TO AVOID RECURSION",
+            "message": "TEST 1: DATABASE OPERATION ADDED BACK",
             "user": current_user.get('email', 'unknown'),
-            "filename": filename
+            "filename": filename,
+            "db_success": True
         })
     
     except Exception as e:

@@ -370,14 +370,13 @@ def upload_video():
             print(f"❌ STEP 3 FAILED: WebSocket error: {str(ws_error)}")
             return jsonify({"error": f"WebSocket failed: {str(ws_error)}"}), 500
 
-        print("🔍 STEP 4: Direct worker trigger with CORRECT endpoint...")
+        print("🔍 STEP 4: Using CORRECT /process-from-s3 endpoint...")
         try:
-            # Direct call to working fallback worker with correct endpoint
+            # Use the correct /process-from-s3 endpoint designed for S3 videos
             import requests
             
-            # Use the working fallback worker
             worker_base_url = "https://thakii-02.fanusdigital.site/thakii-worker"
-            worker_endpoint = f"{worker_base_url}/process/{video_id}"
+            worker_endpoint = f"{worker_base_url}/process-from-s3"
             
             worker_payload = {
                 "video_id": video_id,
@@ -399,18 +398,19 @@ def upload_video():
             print(f"   Response status: {response.status_code}")
             print(f"   Response: {response.text[:200]}...")
             
-            if response.status_code in [200, 202]:
-                print(f"✅ STEP 4 OK: Worker triggered successfully")
+            if response.status_code in [200, 201, 202]:
+                print(f"✅ STEP 4 OK: Worker triggered successfully via /process-from-s3")
                 
                 # Update database with worker info
                 postgres_db.update_video_task(video_id, {
-                    'processed_by_worker': 'thakii-02-direct',
+                    'processed_by_worker': 'thakii-02-s3',
                     'processed_by_worker_url': worker_endpoint,
                     'worker_attempts': 1
                 })
                 
             else:
                 print(f"⚠️ STEP 4 WARNING: Worker returned {response.status_code}")
+                print(f"   Response: {response.text}")
                 
         except Exception as worker_error:
             print(f"⚠️ STEP 4 WARNING: Worker trigger error: {str(worker_error)}")

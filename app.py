@@ -300,48 +300,50 @@ def upload_video():
     if file.filename == "":
         return jsonify({"error": "No selected file"}), 400
     
-    # Get current user from auth middleware - SIMPLIFIED TO AVOID RECURSION
+    # STEP-BY-STEP RECURSION DEBUGGING
     try:
+        print("🔍 STEP 1: Getting current user...")
         current_user = get_current_user()
         if not current_user:
             return jsonify({"error": "Authentication required"}), 401
+        print(f"✅ STEP 1 OK: User {current_user.get('email')}")
         
         video_id = str(uuid.uuid4())
         filename = file.filename
+        print(f"🔍 STEP 2: Generated video_id: {video_id}")
         
-        # Upload video to S3
+        print("🔍 STEP 3: Uploading to S3...")
         video_key = s3_storage.upload_video(file, video_id, filename)
-        print(f"Video uploaded to S3: {video_key}")
+        print(f"✅ STEP 3 OK: S3 key: {video_key}")
         
-        # Create DB record in PostgreSQL with user information and s3_key
+        print("🔍 STEP 4: Creating DB record...")
         task_data = postgres_db.create_video_task(
             video_id, 
             filename, 
             current_user['uid'], 
             current_user['email'], 
             "in_queue",
-            s3_key=video_key  # NOW PASSING S3_KEY TO AVOID RECURSION
+            s3_key=video_key
         )
-        print(f"Task created in PostgreSQL: {video_id} for user: {current_user['email']}")
+        print(f"✅ STEP 4 OK: DB record created")
         
-        # Notify via WebSocket
+        print("🔍 STEP 5: WebSocket notification...")
         if websocket_manager:
             websocket_manager.notify_task_update(current_user['uid'], {
                 'video_id': video_id,
                 'status': 'in_queue',
                 'filename': filename
             })
+        print(f"✅ STEP 5 OK: WebSocket notified")
 
-        # Trigger worker processing with enhanced error handling
+        print("🔍 STEP 6: Triggering worker...")
         trigger_success = trigger_worker_processing(
             video_id=video_id,
             user_id=current_user['uid'],
             filename=filename,
             s3_key=video_key
         )
-        
-        if not trigger_success:
-            print(f"⚠️ Worker trigger failed for {video_id}, but upload successful")
+        print(f"✅ STEP 6 OK: Worker triggered: {trigger_success}")
 
         return jsonify({
             "video_id": video_id, 
@@ -352,7 +354,7 @@ def upload_video():
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        print(f"❌ UPLOAD ERROR: {str(e)}")
+        print(f"❌ RECURSION ERROR AT: {str(e)}")
         print(f"📋 Full traceback:")
         print(error_details)
         return jsonify({"error": f"Failed to upload video: {str(e)}"}), 500

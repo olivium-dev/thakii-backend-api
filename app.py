@@ -290,117 +290,9 @@ def get_current_user_info():
             "message": str(e)
         }), 500
 
-@app.route("/test-upload", methods=["POST"])
-def test_upload_video():
-    """Test upload endpoint without authentication for validation"""
-    try:
-        if "file" not in request.files:
-            return jsonify({"error": "No file provided"}), 400
-        
-        file = request.files["file"]
-        if file.filename == "":
-            return jsonify({"error": "No selected file"}), 400
-        
-        # Mock user for testing
-        current_user = {
-            'uid': 'test-user-123',
-            'email': 'test@thakii.dev',
-            'name': 'Test User'
-        }
-        
-        video_id = str(uuid.uuid4())
-        filename = file.filename
-        
-        print("🔍 TEST UPLOAD: S3 upload...")
-        video_key = s3_storage.upload_video(file, video_id, filename)
-        print(f"✅ S3 key: {video_key}")
-        
-        print("🔍 TEST UPLOAD: Database record...")
-        task_data = postgres_db.create_video_task(
-            video_id, 
-            filename, 
-            current_user['uid'], 
-            current_user['email'], 
-            "in_queue",
-            s3_key=video_key
-        )
-        print(f"✅ DB record created")
-        
-        print("🔍 TEST UPLOAD: WebSocket notification...")
-        if websocket_manager:
-            websocket_manager.notify_task_update(current_user['uid'], {
-                'video_id': video_id,
-                'status': 'in_queue',
-                'filename': filename
-            })
-        print(f"✅ WebSocket notified")
-        
-        print("🔍 TEST UPLOAD: EMERGENCY - USING ONLY LINUX POLLING WORKER")
-        
-        # EMERGENCY: Skip HTTP triggers, rely ONLY on Linux polling worker
-        # The Mac worker is broken and the HTTP triggers are interfering
-        print("   Skipping HTTP worker triggers - using polling worker only")
-        print("   Video will be processed by thakii-02 Linux polling worker")
-        
-        worker_used = 'thakii-02-polling-only'
-        
-        # Update database to indicate polling worker will handle this
-        try:
-            postgres_db.update_video_task(video_id, {
-                'processed_by_worker': worker_used,
-                'worker_attempts': 0
-            })
-            print(f"✅ Marked for polling worker processing")
-        except Exception as db_error:
-            print(f"⚠️ Database update failed: {str(db_error)}")
-        
-        return jsonify({
-            "video_id": video_id, 
-            "message": "TEST: Video uploaded successfully! Processing started.",
-            "s3_key": video_key,
-            "worker_used": worker_used or "polling-worker",
-            "status": "Upload complete - worker system tested"
-        })
-        
-    except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        print(f"❌ TEST UPLOAD ERROR: {str(e)}")
-        print(f"📋 Full traceback:")
-        print(error_details)
-        return jsonify({"error": f"Test upload failed: {str(e)}"}), 500
-
 @app.route("/upload", methods=["POST"])
+@require_auth
 def upload_video():
-    # MANUAL AUTH (KNOWN TO WORK) - NO @require_auth DECORATOR
-    try:
-        from core.auth_middleware import verify_auth_token
-        from core.custom_auth import custom_token_manager
-        from flask import g
-        
-        token_data, error = verify_auth_token()
-        if error:
-            return jsonify({"error": "Authentication required", "message": error}), 401
-        
-        token_type = token_data.get('_token_type', 'firebase')
-        if token_type == 'custom':
-            user_info = custom_token_manager.extract_user_info(token_data)
-            g.current_user = user_info
-        else:
-            uid = token_data.get('uid') or token_data.get('user_id') or token_data.get('sub')
-            g.current_user = {
-                'uid': uid,
-                'email': token_data.get('email'),
-                'name': token_data.get('name', 'Unknown')
-            }
-        
-        current_user = get_current_user()
-        if not current_user:
-            return jsonify({"error": "Authentication required"}), 401
-            
-    except Exception as auth_error:
-        return jsonify({"error": f"Authentication failed: {str(auth_error)}"}), 401
-    
     if "file" not in request.files:
         return jsonify({"error": "No file provided"}), 400
     
@@ -408,320 +300,57 @@ def upload_video():
     if file.filename == "":
         return jsonify({"error": "No selected file"}), 400
     
-    # STEP-BY-STEP RECURSION ISOLATION
-    try:
-        current_user = get_current_user()
-        if not current_user:
-            return jsonify({"error": "Authentication required"}), 401
-        
-        video_id = str(uuid.uuid4())
-        filename = file.filename
-        
-        print("🔍 STEP 1: S3 upload (known to work)...")
-        video_key = s3_storage.upload_video(file, video_id, filename)
-        print(f"✅ STEP 1 OK: S3 key: {video_key}")
-        
-        # TEST EACH STEP INDIVIDUALLY TO FIND RECURSION SOURCE
-        print("🔍 STEP 2: Testing DB operation...")
-        try:
-            task_data = postgres_db.create_video_task(
-                video_id, 
-                filename, 
-                current_user['uid'], 
-                current_user['email'], 
-                "in_queue",
-                s3_key=video_key
-            )
-            print(f"✅ STEP 2 OK: DB record created")
-        except Exception as db_error:
-            print(f"❌ STEP 2 FAILED: DB error: {str(db_error)}")
-            return jsonify({"error": f"DB operation failed: {str(db_error)}"}), 500
-        
-        print("🔍 STEP 3: Testing WebSocket notification...")
-        try:
-            if websocket_manager:
-                websocket_manager.notify_task_update(current_user['uid'], {
-                    'video_id': video_id,
-                    'status': 'in_queue',
-                    'filename': filename
-                })
-            print(f"✅ STEP 3 OK: WebSocket notified")
-        except Exception as ws_error:
-            print(f"❌ STEP 3 FAILED: WebSocket error: {str(ws_error)}")
-            return jsonify({"error": f"WebSocket failed: {str(ws_error)}"}), 500
+    # Get current user from auth middleware
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "Authentication required"}), 401
+    
+    video_id = str(uuid.uuid4())
+    filename = file.filename
 
-            print("🔍 STEP 4: Using PRIMARY/FALLBACK worker system...")
-            try:
-                import requests
-                
-                # PRIMARY: thakii-3 (Mac) - FALLBACK: thakii-02 (Linux polling)
-                primary_worker_url = "https://thakii-3.fanusdigital.site/thakii-worker"
-                fallback_worker_url = "https://thakii-02.fanusdigital.site/thakii-worker"
-                
-                worker_payload = {
-                    "video_id": video_id,
-                    "user_id": current_user['uid'],
-                    "filename": filename,
-                    "s3_key": video_key
-                }
-                
-                print(f"   PRIMARY: {primary_worker_url}")
-                print(f"   FALLBACK: {fallback_worker_url}")
-                print(f"   Payload: {worker_payload}")
-                
-                worker_used = None
-                worker_url_used = None
-                
-                # Try PRIMARY worker (thakii-3 Mac) first
-                try:
-                    primary_endpoint = f"{primary_worker_url}/process-from-s3"
-                    print(f"   Trying PRIMARY: {primary_endpoint}")
-                    response = requests.post(
-                        primary_endpoint, 
-                        json=worker_payload, 
-                        timeout=10,
-                        headers={'Content-Type': 'application/json'}
-                    )
-                    
-                    if response.status_code in [200, 201, 202]:
-                        print(f"✅ PRIMARY worker (thakii-3) accepted job!")
-                        worker_used = 'thakii-3-primary'
-                        worker_url_used = primary_endpoint
-                    else:
-                        print(f"⚠️ PRIMARY worker returned {response.status_code}, trying fallback...")
-                        raise Exception("Primary failed")
-                        
-                except Exception as primary_error:
-                    print(f"⚠️ PRIMARY worker failed: {str(primary_error)}")
-                    print(f"   Trying FALLBACK: {fallback_worker_url}")
-                    
-                    # Try FALLBACK worker (thakii-02 Linux)
-                    try:
-                        fallback_endpoint = f"{fallback_worker_url}/process-from-s3"
-                        response = requests.post(
-                            fallback_endpoint, 
-                            json=worker_payload, 
-                            timeout=10,
-                            headers={'Content-Type': 'application/json'}
-                        )
-                        
-                        if response.status_code in [200, 201, 202]:
-                            print(f"✅ FALLBACK worker (thakii-02) accepted job!")
-                            worker_used = 'thakii-02-fallback'
-                            worker_url_used = fallback_endpoint
-                        else:
-                            print(f"❌ FALLBACK worker also failed: {response.status_code}")
-                            
-                    except Exception as fallback_error:
-                        print(f"❌ FALLBACK worker failed: {str(fallback_error)}")
-                        print("   Relying on thakii-02 polling worker as last resort")
-                
-                # Update database with worker info (if HTTP trigger worked)
-                if worker_used:
-                    try:
-                        postgres_db.update_video_task(video_id, {
-                            'processed_by_worker': worker_used,
-                            'processed_by_worker_url': worker_url_used,
-                            'worker_attempts': 1
-                        })
-                        print(f"✅ STEP 4 OK: Worker triggered successfully")
-                    except Exception as db_error:
-                        print(f"⚠️ Database update failed: {str(db_error)}")
-                else:
-                    print(f"⚠️ HTTP triggers failed, relying on polling worker")
-                    
-            except Exception as worker_error:
-                print(f"⚠️ STEP 4 WARNING: Worker trigger error: {str(worker_error)}")
-                print("   Video will be processed by polling worker")
+    try:
+        # Upload video to S3 instead of local storage
+        video_key = s3_storage.upload_video(file, video_id, filename)
+        print(f"Video uploaded to S3: {video_key}")
+        
+        # Create DB record in PostgreSQL with user information
+        task_data = postgres_db.create_video_task(
+            video_id, 
+            filename, 
+            current_user['uid'], 
+            current_user['email'], 
+            "in_queue"
+        )
+        print(f"Task created in PostgreSQL: {video_id} for user: {current_user['email']}")
+        
+        # Notify via WebSocket
+        if websocket_manager:
+            websocket_manager.notify_task_update(current_user['uid'], {
+                'video_id': video_id,
+                'status': 'in_queue',
+                'filename': filename
+            })
+
+        # Trigger worker processing with enhanced error handling
+        trigger_success = trigger_worker_processing(
+            video_id=video_id,
+            user_id=current_user['uid'],
+            filename=filename,
+            s3_key=video_key
+        )
+        
+        if not trigger_success:
+            print(f"⚠️ Worker trigger failed for {video_id}, but upload successful")
 
         return jsonify({
             "video_id": video_id, 
-            "message": "Video uploaded successfully! Processing started.",
-            "s3_key": video_key,
-            "status": "Upload complete - worker triggered directly"
+            "message": "Video uploaded to S3 and queued for processing",
+            "s3_key": video_key
         })
     
     except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        print(f"❌ RECURSION ERROR AT: {str(e)}")
-        print(f"📋 Full traceback:")
-        print(error_details)
+        print(f"Error uploading video: {str(e)}")
         return jsonify({"error": f"Failed to upload video: {str(e)}"}), 500
-
-@app.route("/test-recursion", methods=["POST"])
-def test_recursion_debug():
-    """Test endpoint to isolate recursion issue - NO @require_auth decorator"""
-    try:
-        print("🔍 TEST: No auth decorator - testing basic functionality...")
-        
-        # Test 1: Basic response
-        print("✅ TEST 1: Basic endpoint works")
-        
-        # Test 2: Try to manually get auth header
-        auth_header = request.headers.get('Authorization', '')
-        print(f"✅ TEST 2: Got auth header: {auth_header[:50]}...")
-        
-        # Test 3: Try manual token verification
-        if auth_header.startswith('Bearer '):
-            token = auth_header.split(' ')[1]
-            print(f"✅ TEST 3: Extracted token: {token[:30]}...")
-            
-            # Test 4: Try verify_auth_token directly
-            from core.auth_middleware import verify_auth_token
-            print("🔍 TEST 4: Calling verify_auth_token directly...")
-            
-            # Temporarily set request context for verification
-            with app.test_request_context(headers={'Authorization': auth_header}):
-                token_data, error = verify_auth_token()
-                if error:
-                    print(f"❌ TEST 4 FAILED: {error}")
-                    return jsonify({"test": "verify_auth_token failed", "error": error})
-                else:
-                    print(f"✅ TEST 4 OK: Token verified")
-                    
-                    # Test 5: Try get_current_user after setting g.current_user
-                    from flask import g
-                    from core.custom_auth import custom_token_manager
-                    
-                    token_type = token_data.get('_token_type', 'firebase')
-                    if token_type == 'custom':
-                        user_info = custom_token_manager.extract_user_info(token_data)
-                        g.current_user = user_info
-                    else:
-                        uid = token_data.get('uid') or token_data.get('user_id') or token_data.get('sub')
-                        g.current_user = {
-                            'uid': uid,
-                            'email': token_data.get('email'),
-                            'name': token_data.get('name', 'Unknown')
-                        }
-                    
-                    print("🔍 TEST 5: Calling get_current_user...")
-                    current_user = get_current_user()
-                    print(f"✅ TEST 5 OK: {current_user.get('email') if current_user else 'None'}")
-                    
-                    return jsonify({
-                        "test": "SUCCESS - No recursion in manual auth flow",
-                        "user": current_user.get('email') if current_user else None
-                    })
-        
-        return jsonify({"test": "No auth header provided"})
-        
-    except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        print(f"❌ RECURSION IN TEST: {str(e)}")
-        print(f"📋 Traceback: {error_details}")
-        return jsonify({"test": "FAILED", "error": str(e), "traceback": error_details})
-
-@app.route("/test-simple-auth", methods=["POST"])
-def test_simple_auth():
-    """Test with a simplified require_auth decorator"""
-    try:
-        print("🔍 TESTING SIMPLIFIED AUTH DECORATOR...")
-        
-        # Manual implementation of @require_auth logic
-        from core.auth_middleware import verify_auth_token
-        from core.custom_auth import custom_token_manager
-        from flask import g
-        
-        print("Step 1: Calling verify_auth_token...")
-        token_data, error = verify_auth_token()
-        
-        if error:
-            print(f"❌ Auth error: {error}")
-            return jsonify({"error": "Authentication required", "message": error}), 401
-        
-        print("Step 2: Processing token data...")
-        token_type = token_data.get('_token_type', 'firebase')
-        
-        if token_type == 'custom':
-            print("Step 3a: Processing custom token...")
-            user_info = custom_token_manager.extract_user_info(token_data)
-            g.current_user = user_info
-        else:
-            print("Step 3b: Processing firebase token...")
-            uid = token_data.get('uid') or token_data.get('user_id') or token_data.get('sub')
-            g.current_user = {
-                'uid': uid,
-                'email': token_data.get('email'),
-                'name': token_data.get('name', 'Unknown')
-            }
-        
-        print("Step 4: Calling get_current_user...")
-        current_user = get_current_user()
-        
-        print("✅ SUCCESS: Manual auth decorator works!")
-        return jsonify({
-            "test": "SUCCESS - Manual auth decorator works",
-            "user": current_user.get('email') if current_user else None
-        })
-        
-    except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        print(f"❌ ERROR IN MANUAL AUTH: {str(e)}")
-        print(f"📋 Traceback: {error_details}")
-        return jsonify({"test": "FAILED", "error": str(e)})
-
-@app.route("/upload-no-auth", methods=["POST"])
-def upload_no_auth():
-    """Upload endpoint with manual auth - NO DECORATOR"""
-    try:
-        print("🔍 UPLOAD WITH MANUAL AUTH (NO DECORATOR)")
-        
-        # Manual auth
-        from core.auth_middleware import verify_auth_token
-        from core.custom_auth import custom_token_manager
-        from flask import g
-        
-        token_data, error = verify_auth_token()
-        if error:
-            return jsonify({"error": "Authentication required", "message": error}), 401
-        
-        token_type = token_data.get('_token_type', 'firebase')
-        if token_type == 'custom':
-            user_info = custom_token_manager.extract_user_info(token_data)
-            g.current_user = user_info
-        else:
-            uid = token_data.get('uid') or token_data.get('user_id') or token_data.get('sub')
-            g.current_user = {
-                'uid': uid,
-                'email': token_data.get('email'),
-                'name': token_data.get('name', 'Unknown')
-            }
-        
-        current_user = get_current_user()
-        print(f"✅ Auth OK: {current_user.get('email')}")
-        
-        # Check file
-        if "file" not in request.files:
-            return jsonify({"error": "No file provided"}), 400
-        
-        file = request.files["file"]
-        if file.filename == "":
-            return jsonify({"error": "No selected file"}), 400
-        
-        video_id = str(uuid.uuid4())
-        filename = file.filename
-        
-        print("🔍 Testing S3 upload...")
-        video_key = s3_storage.upload_video(file, video_id, filename)
-        print(f"✅ S3 OK: {video_key}")
-        
-        return jsonify({
-            "message": "SUCCESS - Manual auth upload works!",
-            "video_id": video_id,
-            "s3_key": video_key,
-            "user": current_user.get('email')
-        })
-        
-    except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        print(f"❌ ERROR IN MANUAL UPLOAD: {str(e)}")
-        print(f"📋 Traceback: {error_details}")
-        return jsonify({"error": f"Manual upload failed: {str(e)}"}), 500
 
 @app.route("/upload-chunk", methods=["POST"])
 @require_auth
@@ -969,8 +598,8 @@ def download_pdf(video_id):
         if task.get("status") not in ["done", "completed"]:
             return jsonify({"error": "PDF not ready yet"}), 400
         
-        # Generate presigned URL for PDF download with original filename
-        download_url = s3_storage.download_pdf(video_id, task.get("filename"))
+        # Generate presigned URL for PDF download
+        download_url = s3_storage.download_pdf(video_id)
         
         return jsonify({
             "download_url": download_url,

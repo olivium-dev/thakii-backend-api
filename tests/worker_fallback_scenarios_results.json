@@ -1,0 +1,83 @@
+{
+  "summary": {
+    "total": 6,
+    "passed": 6,
+    "failed": 0,
+    "pass_rate": 100.0
+  },
+  "scenarios": [
+    {
+      "test_name": "Scenario 1: Both Workers Healthy",
+      "passed": true,
+      "message": "Primary worker selected when both healthy",
+      "details": {
+        "primary_url": "https://thakii-02.fanusdigital.site/thakii-worker",
+        "fallback_url": "https://thakii-02.fanusdigital.site/thakii-worker",
+        "selected_worker": "primary",
+        "selected_url": "https://thakii-02.fanusdigital.site/thakii-worker"
+      }
+    },
+    {
+      "test_name": "Scenario 2: Primary Down, Fallback Healthy",
+      "passed": true,
+      "message": "Fallback worker selected when primary is down",
+      "details": {
+        "primary_url": "http://invalid-primary-worker.local:9999",
+        "primary_healthy": false,
+        "primary_error": "Connection refused",
+        "fallback_url": "https://thakii-02.fanusdigital.site/thakii-worker",
+        "selected_worker": "fallback",
+        "selected_url": "https://thakii-02.fanusdigital.site/thakii-worker"
+      }
+    },
+    {
+      "test_name": "Scenario 3: Both Workers Down",
+      "passed": true,
+      "message": "No worker selected when both are down",
+      "details": {
+        "primary_url": "http://invalid-primary-worker.local:9999",
+        "primary_healthy": false,
+        "fallback_url": "http://invalid-fallback-worker.local:9998",
+        "fallback_healthy": false,
+        "selected_worker": "none",
+        "selected_url": null
+      }
+    },
+    {
+      "test_name": "Scenario 4: Trigger with Automatic Fallback",
+      "passed": true,
+      "message": "Automatic fallback triggered successfully",
+      "details": {
+        "success": true,
+        "worker_used": "fallback",
+        "worker_url": "https://thakii-02.fanusdigital.site/thakii-worker",
+        "status_code": 201,
+        "error": null
+      }
+    },
+    {
+      "test_name": "Scenario 5: Primary-Only Mode",
+      "passed": true,
+      "message": "Primary-only mode respected",
+      "details": {
+        "priority_mode": "primary-only",
+        "primary_url": "https://thakii-02.fanusdigital.site/thakii-worker",
+        "fallback_url": "https://thakii-02.fanusdigital.site/thakii-worker",
+        "selected_worker": "primary"
+      }
+    },
+    {
+      "test_name": "Scenario 6: Health Check Performance",
+      "passed": true,
+      "message": "Health check completed in 0.10s",
+      "details": {
+        "url": "https://thakii-02.fanusdigital.site/thakii-worker",
+        "response_time": 0.096168,
+        "total_elapsed": 0.10205602645874023,
+        "healthy": true,
+        "timeout_setting": 5
+      }
+    }
+  ],
+  "timestamp": "2025-10-20 01:13:48"
+}

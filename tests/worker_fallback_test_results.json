@@ -1,0 +1,134 @@
+{
+  "summary": {
+    "total": 10,
+    "passed": 10,
+    "failed": 0,
+    "pass_rate": 100.0
+  },
+  "tests": [
+    {
+      "test_name": "Environment Configuration",
+      "passed": true,
+      "message": "Worker configuration found",
+      "details": {
+        "PRIMARY_WORKER_URL": "https://thakii-02.fanusdigital.site/thakii-worker",
+        "FALLBACK_WORKER_URL": "https://thakii-02.fanusdigital.site/thakii-worker",
+        "WORKER_SERVICE_URL": "",
+        "WORKER_PRIORITY_MODE": "primary-with-fallback",
+        "WORKER_HEALTH_TIMEOUT": "5",
+        "WORKER_REQUEST_TIMEOUT": "30"
+      }
+    },
+    {
+      "test_name": "Worker Manager Initialization",
+      "passed": true,
+      "message": "Worker manager initialized successfully",
+      "details": {
+        "primary_url": "https://thakii-02.fanusdigital.site/thakii-worker",
+        "fallback_url": "https://thakii-02.fanusdigital.site/thakii-worker",
+        "priority_mode": "primary-with-fallback",
+        "health_timeout": 5
+      }
+    },
+    {
+      "test_name": "Primary Worker Health Check",
+      "passed": true,
+      "message": "Primary worker is healthy (response: 0.10s)",
+      "details": {
+        "url": "https://thakii-02.fanusdigital.site/thakii-worker",
+        "healthy": true,
+        "response_time": 0.099251,
+        "status_code": 200,
+        "error": null
+      }
+    },
+    {
+      "test_name": "Fallback Worker Health Check",
+      "passed": true,
+      "message": "Fallback worker is healthy (response: 0.09s)",
+      "details": {
+        "url": "https://thakii-02.fanusdigital.site/thakii-worker",
+        "healthy": true,
+        "response_time": 0.085014,
+        "status_code": 200,
+        "error": null
+      }
+    },
+    {
+      "test_name": "Worker Selection with Health Check",
+      "passed": true,
+      "message": "Selected primary worker: https://thakii-02.fanusdigital.site/thakii-worker",
+      "details": {
+        "selected_url": "https://thakii-02.fanusdigital.site/thakii-worker",
+        "selected_worker": "primary"
+      }
+    },
+    {
+      "test_name": "Worker Selection without Health Check",
+      "passed": true,
+      "message": "Selected primary worker (no health check): https://thakii-02.fanusdigital.site/thakii-worker",
+      "details": {
+        "selected_url": "https://thakii-02.fanusdigital.site/thakii-worker",
+        "selected_worker": "primary"
+      }
+    },
+    {
+      "test_name": "All Workers Health Status",
+      "passed": true,
+      "message": "2/2 workers healthy",
+      "details": {
+        "total_workers": 2,
+        "healthy_workers": 2,
+        "unhealthy_workers": 0,
+        "priority_mode": "primary-with-fallback",
+        "workers": {
+          "primary": {
+            "url": "https://thakii-02.fanusdigital.site/thakii-worker",
+            "healthy": true,
+            "error": null
+          },
+          "fallback": {
+            "url": "https://thakii-02.fanusdigital.site/thakii-worker",
+            "healthy": true,
+            "error": null
+          }
+        }
+      }
+    },
+    {
+      "test_name": "Trigger Worker with Mock Payload",
+      "passed": true,
+      "message": "Mock payload validation successful (actual trigger skipped)",
+      "details": {
+        "video_id": "test-video-id-12345",
+        "user_id": "test-user-id",
+        "filename": "test-video.mp4",
+        "s3_key": "videos/test-video-id-12345/test-video.mp4"
+      }
+    },
+    {
+      "test_name": "Invalid Worker URL Health Check",
+      "passed": true,
+      "message": "Correctly identified invalid worker: Connection refused",
+      "details": {
+        "url": "http://invalid-worker-url-that-does-not-exist.local:9999",
+        "healthy": false,
+        "error": "Connection refused"
+      }
+    },
+    {
+      "test_name": "Priority Mode Validation",
+      "passed": true,
+      "message": "Priority mode 'primary-with-fallback' is valid",
+      "details": {
+        "current_mode": "primary-with-fallback",
+        "valid_modes": [
+          "primary-only",
+          "primary-with-fallback",
+          "round-robin"
+        ]
+      }
+    }
+  ],
+  "timestamp": "2025-10-20 01:12:16"
+}

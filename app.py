@@ -291,8 +291,36 @@ def get_current_user_info():
         }), 500
 
 @app.route("/upload", methods=["POST"])
-@require_auth
 def upload_video():
+    # MANUAL AUTH (KNOWN TO WORK) - NO @require_auth DECORATOR
+    try:
+        from core.auth_middleware import verify_auth_token
+        from core.custom_auth import custom_token_manager
+        from flask import g
+        
+        token_data, error = verify_auth_token()
+        if error:
+            return jsonify({"error": "Authentication required", "message": error}), 401
+        
+        token_type = token_data.get('_token_type', 'firebase')
+        if token_type == 'custom':
+            user_info = custom_token_manager.extract_user_info(token_data)
+            g.current_user = user_info
+        else:
+            uid = token_data.get('uid') or token_data.get('user_id') or token_data.get('sub')
+            g.current_user = {
+                'uid': uid,
+                'email': token_data.get('email'),
+                'name': token_data.get('name', 'Unknown')
+            }
+        
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+            
+    except Exception as auth_error:
+        return jsonify({"error": f"Authentication failed: {str(auth_error)}"}), 401
+    
     if "file" not in request.files:
         return jsonify({"error": "No file provided"}), 400
     
@@ -300,7 +328,7 @@ def upload_video():
     if file.filename == "":
         return jsonify({"error": "No selected file"}), 400
     
-    # STEP-BY-STEP RECURSION DEBUGGING
+    # FULL UPLOAD PROCESS (KNOWN TO WORK FROM MANUAL TEST)
     try:
         print("🔍 STEP 1: Getting current user...")
         current_user = get_current_user()

@@ -174,7 +174,39 @@ class WorkerManager:
         
         # Mode: round-robin - alternate between workers (future enhancement)
         # For now, treat as primary-with-fallback
-        return self.select_available_worker(check_health=check_health)
+        # FIXED: Avoid infinite recursion by explicitly handling this case
+        if self.priority_mode == 'round-robin':
+            # Temporarily use primary-with-fallback logic for round-robin
+            # Try primary first
+            if self.primary_worker_url:
+                if not check_health:
+                    return (self.primary_worker_url, 'primary')
+                
+                primary_health = self.check_worker_health(self.primary_worker_url)
+                if primary_health['healthy']:
+                    return (self.primary_worker_url, 'primary')
+            
+            # Fallback to secondary
+            if self.fallback_worker_url:
+                if not check_health:
+                    return (self.fallback_worker_url, 'fallback')
+                
+                fallback_health = self.check_worker_health(self.fallback_worker_url)
+                if fallback_health['healthy']:
+                    return (self.fallback_worker_url, 'fallback')
+            
+            return (None, 'none')
+        
+        # Unknown mode - default to primary-only
+        if self.primary_worker_url:
+            if not check_health:
+                return (self.primary_worker_url, 'primary')
+            
+            health = self.check_worker_health(self.primary_worker_url)
+            if health['healthy']:
+                return (self.primary_worker_url, 'primary')
+        
+        return (None, 'none')
     
     def get_all_workers_health(self) -> Dict[str, Any]:
         """

@@ -290,6 +290,145 @@ def get_current_user_info():
             "message": str(e)
         }), 500
 
+@app.route("/test-upload", methods=["POST"])
+def test_upload_video():
+    """Test upload endpoint without authentication for validation"""
+    try:
+        if "file" not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+        
+        file = request.files["file"]
+        if file.filename == "":
+            return jsonify({"error": "No selected file"}), 400
+        
+        # Mock user for testing
+        current_user = {
+            'uid': 'test-user-123',
+            'email': 'test@thakii.dev',
+            'name': 'Test User'
+        }
+        
+        video_id = str(uuid.uuid4())
+        filename = file.filename
+        
+        print("🔍 TEST UPLOAD: S3 upload...")
+        video_key = s3_storage.upload_video(file, video_id, filename)
+        print(f"✅ S3 key: {video_key}")
+        
+        print("🔍 TEST UPLOAD: Database record...")
+        task_data = postgres_db.create_video_task(
+            video_id, 
+            filename, 
+            current_user['uid'], 
+            current_user['email'], 
+            "in_queue",
+            s3_key=video_key
+        )
+        print(f"✅ DB record created")
+        
+        print("🔍 TEST UPLOAD: WebSocket notification...")
+        if websocket_manager:
+            websocket_manager.notify_task_update(current_user['uid'], {
+                'video_id': video_id,
+                'status': 'in_queue',
+                'filename': filename
+            })
+        print(f"✅ WebSocket notified")
+        
+        print("🔍 TEST UPLOAD: PRIMARY/FALLBACK worker system...")
+        import requests
+        
+        # PRIMARY: thakii-3 (Mac) - FALLBACK: thakii-02 (Linux polling)
+        primary_worker_url = "https://thakii-3.fanusdigital.site/thakii-worker"
+        fallback_worker_url = "https://thakii-02.fanusdigital.site/thakii-worker"
+        
+        worker_payload = {
+            "video_id": video_id,
+            "user_id": current_user['uid'],
+            "filename": filename,
+            "s3_key": video_key
+        }
+        
+        print(f"   PRIMARY: {primary_worker_url}")
+        print(f"   FALLBACK: {fallback_worker_url}")
+        
+        worker_used = None
+        worker_url_used = None
+        
+        # Try PRIMARY worker (thakii-3 Mac) first
+        try:
+            primary_endpoint = f"{primary_worker_url}/process-from-s3"
+            print(f"   Trying PRIMARY: {primary_endpoint}")
+            response = requests.post(
+                primary_endpoint, 
+                json=worker_payload, 
+                timeout=10,
+                headers={'Content-Type': 'application/json'}
+            )
+            
+            if response.status_code in [200, 201, 202]:
+                print(f"✅ PRIMARY worker (thakii-3) accepted job!")
+                worker_used = 'thakii-3-primary'
+                worker_url_used = primary_endpoint
+            else:
+                print(f"⚠️ PRIMARY worker returned {response.status_code}, trying fallback...")
+                raise Exception("Primary failed")
+                
+        except Exception as primary_error:
+            print(f"⚠️ PRIMARY worker failed: {str(primary_error)}")
+            print(f"   Trying FALLBACK: {fallback_worker_url}")
+            
+            # Try FALLBACK worker (thakii-02 Linux)
+            try:
+                fallback_endpoint = f"{fallback_worker_url}/process-from-s3"
+                response = requests.post(
+                    fallback_endpoint, 
+                    json=worker_payload, 
+                    timeout=10,
+                    headers={'Content-Type': 'application/json'}
+                )
+                
+                if response.status_code in [200, 201, 202]:
+                    print(f"✅ FALLBACK worker (thakii-02) accepted job!")
+                    worker_used = 'thakii-02-fallback'
+                    worker_url_used = fallback_endpoint
+                else:
+                    print(f"❌ FALLBACK worker also failed: {response.status_code}")
+                    
+            except Exception as fallback_error:
+                print(f"❌ FALLBACK worker failed: {str(fallback_error)}")
+                print("   Relying on thakii-02 polling worker as last resort")
+        
+        # Update database with worker info (if HTTP trigger worked)
+        if worker_used:
+            try:
+                postgres_db.update_video_task(video_id, {
+                    'processed_by_worker': worker_used,
+                    'processed_by_worker_url': worker_url_used,
+                    'worker_attempts': 1
+                })
+                print(f"✅ Worker triggered successfully")
+            except Exception as db_error:
+                print(f"⚠️ Database update failed: {str(db_error)}")
+        else:
+            print(f"⚠️ HTTP triggers failed, relying on polling worker")
+        
+        return jsonify({
+            "video_id": video_id, 
+            "message": "TEST: Video uploaded successfully! Processing started.",
+            "s3_key": video_key,
+            "worker_used": worker_used or "polling-worker",
+            "status": "Upload complete - worker system tested"
+        })
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"❌ TEST UPLOAD ERROR: {str(e)}")
+        print(f"📋 Full traceback:")
+        print(error_details)
+        return jsonify({"error": f"Test upload failed: {str(e)}"}), 500
+
 @app.route("/upload", methods=["POST"])
 def upload_video():
     # MANUAL AUTH (KNOWN TO WORK) - NO @require_auth DECORATOR
@@ -370,84 +509,89 @@ def upload_video():
             print(f"❌ STEP 3 FAILED: WebSocket error: {str(ws_error)}")
             return jsonify({"error": f"WebSocket failed: {str(ws_error)}"}), 500
 
-        print("🔍 STEP 4: Using worker_manager with primary (thakii-03) + fallback (thakii-02)...")
-        try:
-            # Use the proper worker_manager system with primary/fallback
-            import requests
-            
-            # Try primary worker (thakii-03) first
-            primary_worker_url = "https://thakii-03.fanusdigital.site/thakii-worker"
-            fallback_worker_url = "https://thakii-02.fanusdigital.site/thakii-worker"
-            
-            worker_payload = {
-                "video_id": video_id,
-                "user_id": current_user['uid'],
-                "filename": filename,
-                "s3_key": video_key
-            }
-            
-            print(f"   Trying PRIMARY worker: {primary_worker_url}")
-            print(f"   Payload: {worker_payload}")
-            
-            worker_used = None
-            worker_url_used = None
-            
-            # Try primary worker (thakii-03)
+            print("🔍 STEP 4: Using PRIMARY/FALLBACK worker system...")
             try:
-                primary_endpoint = f"{primary_worker_url}/process-from-s3"
-                response = requests.post(
-                    primary_endpoint, 
-                    json=worker_payload, 
-                    timeout=10,
-                    headers={'Content-Type': 'application/json'}
-                )
+                import requests
                 
-                if response.status_code in [200, 201, 202]:
-                    print(f"✅ PRIMARY worker (thakii-03) accepted job!")
-                    worker_used = 'thakii-03-primary'
-                    worker_url_used = primary_endpoint
-                else:
-                    print(f"⚠️ PRIMARY worker returned {response.status_code}, trying fallback...")
-                    raise Exception("Primary failed")
-                    
-            except Exception as primary_error:
-                print(f"⚠️ PRIMARY worker failed: {str(primary_error)}")
-                print(f"   Trying FALLBACK worker: {fallback_worker_url}")
+                # PRIMARY: thakii-3 (Mac) - FALLBACK: thakii-02 (Linux polling)
+                primary_worker_url = "https://thakii-3.fanusdigital.site/thakii-worker"
+                fallback_worker_url = "https://thakii-02.fanusdigital.site/thakii-worker"
                 
-                # Try fallback worker (thakii-02)
+                worker_payload = {
+                    "video_id": video_id,
+                    "user_id": current_user['uid'],
+                    "filename": filename,
+                    "s3_key": video_key
+                }
+                
+                print(f"   PRIMARY: {primary_worker_url}")
+                print(f"   FALLBACK: {fallback_worker_url}")
+                print(f"   Payload: {worker_payload}")
+                
+                worker_used = None
+                worker_url_used = None
+                
+                # Try PRIMARY worker (thakii-3 Mac) first
                 try:
-                    fallback_endpoint = f"{fallback_worker_url}/process-from-s3"
+                    primary_endpoint = f"{primary_worker_url}/process-from-s3"
+                    print(f"   Trying PRIMARY: {primary_endpoint}")
                     response = requests.post(
-                        fallback_endpoint, 
+                        primary_endpoint, 
                         json=worker_payload, 
                         timeout=10,
                         headers={'Content-Type': 'application/json'}
                     )
                     
                     if response.status_code in [200, 201, 202]:
-                        print(f"✅ FALLBACK worker (thakii-02) accepted job!")
-                        worker_used = 'thakii-02-fallback'
-                        worker_url_used = fallback_endpoint
+                        print(f"✅ PRIMARY worker (thakii-3) accepted job!")
+                        worker_used = 'thakii-3-primary'
+                        worker_url_used = primary_endpoint
                     else:
-                        print(f"❌ FALLBACK worker also failed: {response.status_code}")
+                        print(f"⚠️ PRIMARY worker returned {response.status_code}, trying fallback...")
+                        raise Exception("Primary failed")
                         
-                except Exception as fallback_error:
-                    print(f"❌ FALLBACK worker failed: {str(fallback_error)}")
-            
-            # Update database with worker info
-            if worker_used:
-                postgres_db.update_video_task(video_id, {
-                    'processed_by_worker': worker_used,
-                    'processed_by_worker_url': worker_url_used,
-                    'worker_attempts': 1
-                })
-                print(f"✅ STEP 4 OK: Worker triggered successfully")
-            else:
-                print(f"⚠️ STEP 4 WARNING: Both workers failed")
+                except Exception as primary_error:
+                    print(f"⚠️ PRIMARY worker failed: {str(primary_error)}")
+                    print(f"   Trying FALLBACK: {fallback_worker_url}")
+                    
+                    # Try FALLBACK worker (thakii-02 Linux)
+                    try:
+                        fallback_endpoint = f"{fallback_worker_url}/process-from-s3"
+                        response = requests.post(
+                            fallback_endpoint, 
+                            json=worker_payload, 
+                            timeout=10,
+                            headers={'Content-Type': 'application/json'}
+                        )
+                        
+                        if response.status_code in [200, 201, 202]:
+                            print(f"✅ FALLBACK worker (thakii-02) accepted job!")
+                            worker_used = 'thakii-02-fallback'
+                            worker_url_used = fallback_endpoint
+                        else:
+                            print(f"❌ FALLBACK worker also failed: {response.status_code}")
+                            
+                    except Exception as fallback_error:
+                        print(f"❌ FALLBACK worker failed: {str(fallback_error)}")
+                        print("   Relying on thakii-02 polling worker as last resort")
                 
-        except Exception as worker_error:
-            print(f"⚠️ STEP 4 WARNING: Worker trigger error: {str(worker_error)}")
-            # Don't fail the upload - worker can be triggered manually later
+                # Update database with worker info (if HTTP trigger worked)
+                if worker_used:
+                    try:
+                        postgres_db.update_video_task(video_id, {
+                            'processed_by_worker': worker_used,
+                            'processed_by_worker_url': worker_url_used,
+                            'worker_attempts': 1
+                        })
+                        print(f"✅ STEP 4 OK: Worker triggered successfully")
+                    except Exception as db_error:
+                        print(f"⚠️ Database update failed: {str(db_error)}")
+                else:
+                    print(f"⚠️ HTTP triggers failed, relying on polling worker")
+                    
+            except Exception as worker_error:
+                print(f"⚠️ STEP 4 WARNING: Worker trigger error: {str(worker_error)}")
+                print("   Video will be processed by polling worker")
 
         return jsonify({
             "video_id": video_id, 

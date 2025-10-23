@@ -370,11 +370,14 @@ def upload_video():
             print(f"❌ STEP 3 FAILED: WebSocket error: {str(ws_error)}")
             return jsonify({"error": f"WebSocket failed: {str(ws_error)}"}), 500
 
-        print("🔍 STEP 4: Direct worker trigger (bypassing problematic function)...")
+        print("🔍 STEP 4: Direct worker trigger with CORRECT endpoint...")
         try:
-            # Direct HTTP call to worker instead of using trigger_worker_processing
+            # Direct call to working fallback worker with correct endpoint
             import requests
-            worker_url = "https://thakii-03.fanusdigital.site/process-from-s3"
+            
+            # Use the working fallback worker
+            worker_base_url = "https://thakii-02.fanusdigital.site/thakii-worker"
+            worker_endpoint = f"{worker_base_url}/process/{video_id}"
             
             worker_payload = {
                 "video_id": video_id,
@@ -383,16 +386,26 @@ def upload_video():
                 "s3_key": video_key
             }
             
-            print(f"   Making direct call to: {worker_url}")
-            response = requests.post(worker_url, json=worker_payload, timeout=10)
+            print(f"   Calling: {worker_endpoint}")
+            print(f"   Payload: {worker_payload}")
             
-            if response.status_code == 200:
-                print(f"✅ STEP 4 OK: Direct worker trigger successful")
+            response = requests.post(
+                worker_endpoint, 
+                json=worker_payload, 
+                timeout=15,
+                headers={'Content-Type': 'application/json'}
+            )
+            
+            print(f"   Response status: {response.status_code}")
+            print(f"   Response: {response.text[:200]}...")
+            
+            if response.status_code in [200, 202]:
+                print(f"✅ STEP 4 OK: Worker triggered successfully")
                 
                 # Update database with worker info
                 postgres_db.update_video_task(video_id, {
-                    'processed_by_worker': 'thakii-03-direct',
-                    'processed_by_worker_url': worker_url,
+                    'processed_by_worker': 'thakii-02-direct',
+                    'processed_by_worker_url': worker_endpoint,
                     'worker_attempts': 1
                 })
                 
@@ -400,7 +413,7 @@ def upload_video():
                 print(f"⚠️ STEP 4 WARNING: Worker returned {response.status_code}")
                 
         except Exception as worker_error:
-            print(f"⚠️ STEP 4 WARNING: Direct worker call failed: {str(worker_error)}")
+            print(f"⚠️ STEP 4 WARNING: Worker trigger error: {str(worker_error)}")
             # Don't fail the upload - worker can be triggered manually later
 
         return jsonify({

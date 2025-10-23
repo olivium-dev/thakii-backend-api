@@ -74,15 +74,29 @@ class S3Storage:
             print(f"Error uploading PDF to S3: {e}")
             raise
     
-    def download_pdf(self, video_id):
-        """Get PDF download URL from S3"""
+    def download_pdf(self, video_id, original_filename=None):
+        """Get PDF download URL from S3 with correct filename"""
         try:
             # Use correct S3 path structure: pdfs/{video_id}/{video_id}.pdf
             pdf_key = f"pdfs/{video_id}/{video_id}.pdf"
-            # Generate a presigned URL for downloading
+            
+            # Determine the download filename
+            if original_filename:
+                # Remove video extension and add .pdf
+                pdf_filename = original_filename.rsplit('.', 1)[0] + '.pdf'
+            else:
+                pdf_filename = f"{video_id}.pdf"
+            
+            print(f"🔧 S3 Download: {pdf_key} → filename: {pdf_filename}")
+            
+            # Generate a presigned URL with Content-Disposition header
             download_url = self.s3_client.generate_presigned_url(
                 'get_object',
-                Params={'Bucket': self.bucket_name, 'Key': pdf_key},
+                Params={
+                    'Bucket': self.bucket_name, 
+                    'Key': pdf_key,
+                    'ResponseContentDisposition': f'attachment; filename="{pdf_filename}"'
+                },
                 ExpiresIn=3600  # URL expires in 1 hour
             )
             return download_url

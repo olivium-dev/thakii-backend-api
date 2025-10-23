@@ -45,7 +45,7 @@ class PostgresDB:
     
     def create_video_task(self, video_id: str, filename: str, 
                          user_id: str, user_email: str, 
-                         status: str = "in_queue", s3_key: str = None) -> Dict[str, Any]:
+                         status: str = "in_queue") -> Dict[str, Any]:
         """Create a new video task"""
         if not self._is_available():
             raise Exception("PostgreSQL not available")
@@ -55,11 +55,11 @@ class PostgresDB:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
                     INSERT INTO video_tasks 
-                    (video_id, filename, user_id, user_email, status, upload_date, s3_key)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (video_id, filename, user_id, user_email, status, upload_date)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     RETURNING *
                 """, (video_id, filename, user_id, user_email, status, 
-                      datetime.datetime.now(), s3_key))
+                      datetime.datetime.now()))
                 conn.commit()
                 result = dict(cur.fetchone())
                 # Convert datetime objects to ISO format strings

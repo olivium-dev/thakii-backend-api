@@ -354,6 +354,82 @@ def upload_video():
         print(f"Error uploading video: {str(e)}")
         return jsonify({"error": f"Failed to upload video: {str(e)}"}), 500
 
+
+@app.route("/test-upload", methods=["POST"])
+def test_upload_video():
+    """
+    TEMPORARY AUTH BYPASS FOR TESTING - REMOVE AFTER DEBUGGING
+    This endpoint bypasses Firebase authentication for testing purposes
+    """
+    print("🧪 TEST UPLOAD: Using auth bypass endpoint")
+    
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"error": "No selected file"}), 400
+    
+    # Use hardcoded test user instead of authentication
+    test_user = {
+        'uid': 'test-user-bypass',
+        'email': 'test@thakii.com'
+    }
+    
+    video_id = str(uuid.uuid4())
+    filename = file.filename
+
+    try:
+        print(f"🧪 TEST: Uploading {filename} as {video_id}")
+        
+        # Upload video to S3
+        video_key = s3_storage.upload_video(file, video_id, filename)
+        print(f"✅ TEST: Video uploaded to S3: {video_key}")
+        
+        # Create DB record in PostgreSQL with test user information
+        task_data = postgres_db.create_video_task(
+            video_id, 
+            filename, 
+            test_user['uid'], 
+            test_user['email'], 
+            "in_queue",
+            s3_key=video_key
+        )
+        print(f"✅ TEST: Task created in PostgreSQL: {video_id} for user: {test_user['email']}")
+        
+        # Notify via WebSocket (if available)
+        if websocket_manager:
+            websocket_manager.notify_task_update(test_user['uid'], {
+                'video_id': video_id,
+                'status': 'in_queue',
+                'filename': filename
+            })
+
+        # Trigger worker processing with enhanced error handling
+        print(f"🔄 TEST: Triggering worker processing for {video_id}")
+        trigger_success = trigger_worker_processing(
+            video_id=video_id,
+            user_id=test_user['uid'],
+            filename=filename,
+            s3_key=video_key
+        )
+        
+        if not trigger_success:
+            print(f"⚠️ TEST: Worker trigger failed for {video_id}, but upload successful")
+
+        return jsonify({
+            "video_id": video_id, 
+            "message": "TEST: Video uploaded to S3 and queued for processing",
+            "s3_key": video_key,
+            "test_mode": True,
+            "user": test_user
+        })
+    
+    except Exception as e:
+        print(f"❌ TEST: Error uploading video: {str(e)}")
+        return jsonify({"error": f"Failed to upload video: {str(e)}"}), 500
+
+
 @app.route("/upload-chunk", methods=["POST"])
 @require_auth
 def upload_chunk():

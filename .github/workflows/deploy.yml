@@ -35,6 +35,47 @@ jobs:
         server-user: ${{ env.SERVER_USER }}
         host-alias: 'thakii-server'
     
+    - name: Emergency Disk Cleanup
+      env:
+        BACKEND_PATH: ${{ env.BACKEND_PATH }}
+      run: |
+        echo "🧹 Running emergency disk cleanup..."
+        ssh thakii-server "
+          set -e
+          echo '=== EMERGENCY DISK CLEANUP ==='
+          
+          echo 'Before cleanup:'
+          df -h
+          
+          echo ''
+          echo 'Cleaning /tmp directory...'
+          
+          # Clean up failed backup attempts
+          sudo find /tmp -maxdepth 1 -name 'backend-backup-*' -type d -exec rm -rf {} + 2>/dev/null || true
+          echo '✅ Removed backup directories'
+          
+          # Clean up old video files
+          sudo find /tmp -name '*.mp4' -type f -mtime +0 -delete 2>/dev/null || true
+          sudo find /tmp -name '*.pdf' -type f -mtime +0 -delete 2>/dev/null || true
+          echo '✅ Removed old video/PDF files'
+          
+          # Clean up worker temp files
+          sudo rm -rf /tmp/thakii-worker/* 2>/dev/null || true
+          sudo rm -rf /tmp/tmp* 2>/dev/null || true
+          echo '✅ Removed worker temp files'
+          
+          # Clean up any other large temp files
+          sudo find /tmp -type f -size +10M -mtime +0 -delete 2>/dev/null || true
+          echo '✅ Removed large temp files'
+          
+          echo ''
+          echo 'After cleanup:'
+          df -h
+          
+          echo ''
+          echo '🎉 Disk cleanup complete!'
+        "
+    
     - name: Deploy Backend via Git Pull
       env:
         BACKEND_PATH: ${{ env.BACKEND_PATH }}
@@ -42,15 +83,13 @@ jobs:
         ssh thakii-server "
           set -e
           
-          echo '=== Deploying Backend API ==='
+          echo '=== Deploying Backend API (No Backup) ==='
           
           # Navigate to backend directory
           cd $BACKEND_PATH
           
-          # Create backup
-          BACKUP_NAME=\"backend-backup-\$(date +%Y%m%d-%H%M%S)\"
-          cp -r . /tmp/\$BACKUP_NAME
-          echo \"✅ Backup created: /tmp/\$BACKUP_NAME\"
+          # Skip backup to avoid disk space issues
+          echo \"⚠️ Skipping backup due to disk space constraints\"
           
           # Pull latest changes
           echo '📥 Pulling latest code...'

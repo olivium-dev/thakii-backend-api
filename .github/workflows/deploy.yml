@@ -22,22 +22,18 @@ jobs:
     - name: Test SSH Connection FIRST
       uses: ./.github/actions/cloudflare-ssh
       with:
-        ssh-private-key: ${{ secrets.SERVER_SSH_PRIVATE_KEY }}
+        ssh-private-key: ${{ secrets.THAKII_SSH_PRIVATE_KEY }}
         server-hostname: ${{ env.SERVER_HOST }}
         server-user: ${{ env.SERVER_USER }}
         host-alias: 'thakii-server-test'
-        cloudflare-service-token-id: ${{ secrets.CF_SERVICE_TOKEN_ID }}
-        cloudflare-service-token-secret: ${{ secrets.CF_SERVICE_TOKEN_SECRET }}
     
     - name: Setup SSH Connection via Cloudflare
       uses: ./.github/actions/cloudflare-ssh
       with:
-        ssh-private-key: ${{ secrets.SERVER_SSH_PRIVATE_KEY }}
+        ssh-private-key: ${{ secrets.THAKII_SSH_PRIVATE_KEY }}
         server-hostname: ${{ env.SERVER_HOST }}
         server-user: ${{ env.SERVER_USER }}
         host-alias: 'thakii-server'
-        cloudflare-service-token-id: ${{ secrets.CF_SERVICE_TOKEN_ID }}
-        cloudflare-service-token-secret: ${{ secrets.CF_SERVICE_TOKEN_SECRET }}
     
     - name: Deploy Backend via Git Pull
       env:

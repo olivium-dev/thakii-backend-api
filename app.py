@@ -309,25 +309,44 @@ def upload_video():
         video_id = str(uuid.uuid4())
         filename = file.filename
         
-        print(f"🎯 UPLOAD DEBUG: video_id={video_id}, user={current_user.get('email', 'unknown')}")
+        # Upload video to S3
+        video_key = s3_storage.upload_video(file, video_id, filename)
+        print(f"Video uploaded to S3: {video_key}")
         
-        # TEST 1: ADD DATABASE OPERATION BACK
-        print("🔍 Testing database operation...")
+        # Create DB record in PostgreSQL with user information and s3_key
         task_data = postgres_db.create_video_task(
             video_id, 
             filename, 
             current_user['uid'], 
             current_user['email'], 
-            "in_queue"
+            "in_queue",
+            s3_key=video_key  # NOW PASSING S3_KEY TO AVOID RECURSION
         )
-        print(f"✅ Database operation successful: {video_id}")
+        print(f"Task created in PostgreSQL: {video_id} for user: {current_user['email']}")
         
+        # Notify via WebSocket
+        if websocket_manager:
+            websocket_manager.notify_task_update(current_user['uid'], {
+                'video_id': video_id,
+                'status': 'in_queue',
+                'filename': filename
+            })
+
+        # Trigger worker processing with enhanced error handling
+        trigger_success = trigger_worker_processing(
+            video_id=video_id,
+            user_id=current_user['uid'],
+            filename=filename,
+            s3_key=video_key
+        )
+        
+        if not trigger_success:
+            print(f"⚠️ Worker trigger failed for {video_id}, but upload successful")
+
         return jsonify({
             "video_id": video_id, 
-            "message": "TEST 1: DATABASE OPERATION ADDED BACK",
-            "user": current_user.get('email', 'unknown'),
-            "filename": filename,
-            "db_success": True
+            "message": "Video uploaded to S3 and queued for processing",
+            "s3_key": video_key
         })
     
     except Exception as e:

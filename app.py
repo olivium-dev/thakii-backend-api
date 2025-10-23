@@ -335,83 +335,24 @@ def test_upload_video():
             })
         print(f"✅ WebSocket notified")
         
-        print("🔍 TEST UPLOAD: PRIMARY/FALLBACK worker system...")
-        import requests
+        print("🔍 TEST UPLOAD: EMERGENCY - USING ONLY LINUX POLLING WORKER")
         
-        # PRIMARY: thakii-3 (Mac) - FALLBACK: thakii-02 (Linux polling)
-        primary_worker_url = "https://thakii-3.fanusdigital.site/thakii-worker"
-        fallback_worker_url = "https://thakii-02.fanusdigital.site/thakii-worker"
+        # EMERGENCY: Skip HTTP triggers, rely ONLY on Linux polling worker
+        # The Mac worker is broken and the HTTP triggers are interfering
+        print("   Skipping HTTP worker triggers - using polling worker only")
+        print("   Video will be processed by thakii-02 Linux polling worker")
         
-        worker_payload = {
-            "video_id": video_id,
-            "user_id": current_user['uid'],
-            "filename": filename,
-            "s3_key": video_key
-        }
+        worker_used = 'thakii-02-polling-only'
         
-        print(f"   PRIMARY: {primary_worker_url}")
-        print(f"   FALLBACK: {fallback_worker_url}")
-        
-        worker_used = None
-        worker_url_used = None
-        
-        # Try PRIMARY worker (thakii-3 Mac) first
+        # Update database to indicate polling worker will handle this
         try:
-            primary_endpoint = f"{primary_worker_url}/process-from-s3"
-            print(f"   Trying PRIMARY: {primary_endpoint}")
-            response = requests.post(
-                primary_endpoint, 
-                json=worker_payload, 
-                timeout=10,
-                headers={'Content-Type': 'application/json'}
-            )
-            
-            if response.status_code in [200, 201, 202]:
-                print(f"✅ PRIMARY worker (thakii-3) accepted job!")
-                worker_used = 'thakii-3-primary'
-                worker_url_used = primary_endpoint
-            else:
-                print(f"⚠️ PRIMARY worker returned {response.status_code}, trying fallback...")
-                raise Exception("Primary failed")
-                
-        except Exception as primary_error:
-            print(f"⚠️ PRIMARY worker failed: {str(primary_error)}")
-            print(f"   Trying FALLBACK: {fallback_worker_url}")
-            
-            # Try FALLBACK worker (thakii-02 Linux)
-            try:
-                fallback_endpoint = f"{fallback_worker_url}/process-from-s3"
-                response = requests.post(
-                    fallback_endpoint, 
-                    json=worker_payload, 
-                    timeout=10,
-                    headers={'Content-Type': 'application/json'}
-                )
-                
-                if response.status_code in [200, 201, 202]:
-                    print(f"✅ FALLBACK worker (thakii-02) accepted job!")
-                    worker_used = 'thakii-02-fallback'
-                    worker_url_used = fallback_endpoint
-                else:
-                    print(f"❌ FALLBACK worker also failed: {response.status_code}")
-                    
-            except Exception as fallback_error:
-                print(f"❌ FALLBACK worker failed: {str(fallback_error)}")
-                print("   Relying on thakii-02 polling worker as last resort")
-        
-        # Update database with worker info (if HTTP trigger worked)
-        if worker_used:
-            try:
-                postgres_db.update_video_task(video_id, {
-                    'processed_by_worker': worker_used,
-                    'processed_by_worker_url': worker_url_used,
-                    'worker_attempts': 1
-                })
-                print(f"✅ Worker triggered successfully")
-            except Exception as db_error:
-                print(f"⚠️ Database update failed: {str(db_error)}")
-        else:
-            print(f"⚠️ HTTP triggers failed, relying on polling worker")
+            postgres_db.update_video_task(video_id, {
+                'processed_by_worker': worker_used,
+                'worker_attempts': 0
+            })
+            print(f"✅ Marked for polling worker processing")
+        except Exception as db_error:
+            print(f"⚠️ Database update failed: {str(db_error)}")
         
         return jsonify({
             "video_id": video_id, 

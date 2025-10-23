@@ -64,15 +64,15 @@ jobs:
           
           # Restart backend service
           echo '🔄 Restarting backend service...'
-          sudo systemctl restart thakii-backend-api
+          sudo systemctl restart thakii-backend.service
           
           # Wait for service to start
           sleep 3
           
           # Check service status
-          sudo systemctl is-active thakii-backend-api || (
+          sudo systemctl is-active thakii-backend.service || (
             echo '❌ Service failed to start'
-            sudo systemctl status thakii-backend-api
+            sudo systemctl status thakii-backend.service
             exit 1
           )
           

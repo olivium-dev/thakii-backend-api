@@ -370,18 +370,8 @@ def upload_video():
             print(f"❌ STEP 3 FAILED: WebSocket error: {str(ws_error)}")
             return jsonify({"error": f"WebSocket failed: {str(ws_error)}"}), 500
 
-        print("🔍 STEP 4: Testing worker trigger...")
-        try:
-            trigger_success = trigger_worker_processing(
-                video_id=video_id,
-                user_id=current_user['uid'],
-                filename=filename,
-                s3_key=video_key
-            )
-            print(f"✅ STEP 4 OK: Worker triggered: {trigger_success}")
-        except Exception as worker_error:
-            print(f"❌ STEP 4 FAILED: Worker trigger error: {str(worker_error)}")
-            return jsonify({"error": f"Worker trigger failed: {str(worker_error)}"}), 500
+        print("🔍 STEP 4: SKIPPING worker trigger (known to cause recursion)...")
+        print(f"✅ STEP 4 SKIPPED: Worker trigger bypassed to avoid recursion")
 
         return jsonify({
             "video_id": video_id, 

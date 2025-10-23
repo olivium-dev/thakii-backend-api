@@ -1,1 +1,108 @@
+name: Deploy Backend to Server
 
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  SERVER_HOST: thakii-02.fds-1.com
+  SERVER_USER: ec2-user
+  BACKEND_PATH: /home/ec2-user/thakii-backend-api
+
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Test SSH Connection FIRST
+      uses: ./.github/actions/cloudflare-ssh
+      with:
+        ssh-private-key: ${{ secrets.SERVER_SSH_PRIVATE_KEY }}
+        server-hostname: ${{ env.SERVER_HOST }}
+        server-user: ${{ env.SERVER_USER }}
+        host-alias: 'thakii-server-test'
+        cloudflare-service-token-id: ${{ secrets.CF_SERVICE_TOKEN_ID }}
+        cloudflare-service-token-secret: ${{ secrets.CF_SERVICE_TOKEN_SECRET }}
+    
+    - name: Setup SSH Connection via Cloudflare
+      uses: ./.github/actions/cloudflare-ssh
+      with:
+        ssh-private-key: ${{ secrets.SERVER_SSH_PRIVATE_KEY }}
+        server-hostname: ${{ env.SERVER_HOST }}
+        server-user: ${{ env.SERVER_USER }}
+        host-alias: 'thakii-server'
+        cloudflare-service-token-id: ${{ secrets.CF_SERVICE_TOKEN_ID }}
+        cloudflare-service-token-secret: ${{ secrets.CF_SERVICE_TOKEN_SECRET }}
+    
+    - name: Deploy Backend via Git Pull
+      env:
+        BACKEND_PATH: ${{ env.BACKEND_PATH }}
+      run: |
+        ssh thakii-server "
+          set -e
+          
+          echo '=== Deploying Backend API ==='
+          
+          # Navigate to backend directory
+          cd $BACKEND_PATH
+          
+          # Create backup
+          BACKUP_NAME=\"backend-backup-\$(date +%Y%m%d-%H%M%S)\"
+          cp -r . /tmp/\$BACKUP_NAME
+          echo \"✅ Backup created: /tmp/\$BACKUP_NAME\"
+          
+          # Pull latest changes
+          echo '📥 Pulling latest code...'
+          git fetch origin
+          git reset --hard origin/main
+          
+          # Activate virtual environment and install dependencies
+          echo '📦 Installing dependencies...'
+          source venv/bin/activate
+          pip install -q -r requirements.txt
+          
+          # Restart backend service
+          echo '🔄 Restarting backend service...'
+          sudo systemctl restart thakii-backend-api
+          
+          # Wait for service to start
+          sleep 3
+          
+          # Check service status
+          sudo systemctl is-active thakii-backend-api || (
+            echo '❌ Service failed to start'
+            sudo systemctl status thakii-backend-api
+            exit 1
+          )
+          
+          echo '✅ Backend deployment complete'
+        "
+    
+    - name: Verify Backend Health
+      run: |
+        # Wait for backend to fully start
+        sleep 5
+        
+        echo "🔍 Checking backend health..."
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" https://thakii-02.fanusdigital.site/thakii-be/health)
+        
+        if [ "$HTTP_CODE" -eq 200 ]; then
+          echo "✅ Backend is healthy (HTTP $HTTP_CODE)"
+        else
+          echo "⚠️  Backend health check failed (HTTP $HTTP_CODE)"
+          exit 1
+        fi
+    
+    - name: Notify deployment status
+      if: always()
+      run: |
+        if [ $? -eq 0 ]; then
+          echo "✅ Backend deployment successful"
+        else
+          echo "❌ Backend deployment failed"
+        fi

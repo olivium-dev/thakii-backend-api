@@ -1,11 +1,11 @@
 name: 'Setup Cloudflare SSH'
 description: 'Sets up SSH connection through Cloudflare tunnel'
 inputs:
-  ssh-password:
-    description: 'SSH password for authentication'
+  ssh-private-key:
+    description: 'SSH private key for authentication'
     required: true
   server-hostname:
-    description: 'Cloudflare tunnel hostname (e.g., vps-71.fds-1.com)'
+    description: 'Cloudflare tunnel hostname (e.g., thakii-02.fds-1.com)'
     required: true
   server-user:
     description: 'SSH username'
@@ -14,48 +14,52 @@ inputs:
   host-alias:
     description: 'SSH host alias to use in commands'
     required: true
+  cloudflare-service-token-id:
+    description: 'Cloudflare service token ID (optional)'
+    required: false
+  cloudflare-service-token-secret:
+    description: 'Cloudflare service token secret (optional)'
+    required: false
 
 runs:
   using: 'composite'
   steps:
-    - name: Disable IPv6 and Install cloudflared
+    - name: Install cloudflared
       run: |
-        echo "🔧 Disabling IPv6 for cloudflared connectivity..."
-        sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
-        sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
         echo "📥 Installing cloudflared..."
         wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
         sudo dpkg -i cloudflared-linux-amd64.deb
-        cloudflared --version
-        echo "✅ cloudflared installed with IPv6 disabled"
+        cloudflared version
+        echo "✅ cloudflared installed"
       shell: bash
     
-    - name: Install sshpass
+    - name: Setup SSH Key
       run: |
-        echo "📦 Installing sshpass..."
-        sudo apt-get update -qq
-        sudo apt-get install -y sshpass
-        echo "✅ sshpass installed"
+        echo "🔑 Setting up SSH private key..."
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        echo "${{ inputs.ssh-private-key }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        echo "✅ SSH key configured"
       shell: bash
     
     - name: Configure SSH
       run: |
         echo "⚙️  Configuring SSH for Cloudflare tunnel..."
-        mkdir -p ~/.ssh
         cat >> ~/.ssh/config << 'EOF'
         Host ${{ inputs.host-alias }}
           HostName ${{ inputs.server-hostname }}
           User ${{ inputs.server-user }}
           ProxyCommand cloudflared access tcp --hostname ${{ inputs.server-hostname }}
-          PreferredAuthentications password
+          IdentityFile ~/.ssh/id_rsa
+          ConnectTimeout 10
+          ServerAliveInterval 60
+          ServerAliveCountMax 3
           StrictHostKeyChecking no
           UserKnownHostsFile /dev/null
-          ServerAliveInterval 30
-          ServerAliveCountMax 3
-          ConnectTimeout 30
-          AddressFamily inet
         EOF
-        echo "✅ SSH config created"
+        chmod 600 ~/.ssh/config
+        echo "✅ SSH configuration created"
         echo ""
         echo "📋 SSH configuration:"
         cat ~/.ssh/config
@@ -63,12 +67,15 @@ runs:
     
     - name: Test SSH connection
       run: |
-        echo "🔍 Testing SSH connection..."
-        if sshpass -p "${{ inputs.ssh-password }}" ssh ${{ inputs.host-alias }} "echo '✅ SSH connection successful'"; then
+        echo "🔍 Testing SSH connection (10 second timeout)..."
+        echo "Command: ls -la /"
+        echo ""
+        if timeout 10s ssh -v ${{ inputs.host-alias }} "ls -la /" 2>&1; then
+          echo ""
           echo "🎉 SSH tunnel is working!"
         else
-          echo "❌ SSH connection failed"
+          EXIT_CODE=$?
+          echo "❌ SSH connection failed or timed out (exit code: $EXIT_CODE)"
           exit 1
         fi
       shell: bash
-

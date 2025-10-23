@@ -359,6 +359,71 @@ def upload_video():
         print(error_details)
         return jsonify({"error": f"Failed to upload video: {str(e)}"}), 500
 
+@app.route("/test-recursion", methods=["POST"])
+def test_recursion_debug():
+    """Test endpoint to isolate recursion issue - NO @require_auth decorator"""
+    try:
+        print("🔍 TEST: No auth decorator - testing basic functionality...")
+        
+        # Test 1: Basic response
+        print("✅ TEST 1: Basic endpoint works")
+        
+        # Test 2: Try to manually get auth header
+        auth_header = request.headers.get('Authorization', '')
+        print(f"✅ TEST 2: Got auth header: {auth_header[:50]}...")
+        
+        # Test 3: Try manual token verification
+        if auth_header.startswith('Bearer '):
+            token = auth_header.split(' ')[1]
+            print(f"✅ TEST 3: Extracted token: {token[:30]}...")
+            
+            # Test 4: Try verify_auth_token directly
+            from core.auth_middleware import verify_auth_token
+            print("🔍 TEST 4: Calling verify_auth_token directly...")
+            
+            # Temporarily set request context for verification
+            with app.test_request_context(headers={'Authorization': auth_header}):
+                token_data, error = verify_auth_token()
+                if error:
+                    print(f"❌ TEST 4 FAILED: {error}")
+                    return jsonify({"test": "verify_auth_token failed", "error": error})
+                else:
+                    print(f"✅ TEST 4 OK: Token verified")
+                    
+                    # Test 5: Try get_current_user after setting g.current_user
+                    from flask import g
+                    from core.custom_auth import custom_token_manager
+                    
+                    token_type = token_data.get('_token_type', 'firebase')
+                    if token_type == 'custom':
+                        user_info = custom_token_manager.extract_user_info(token_data)
+                        g.current_user = user_info
+                    else:
+                        uid = token_data.get('uid') or token_data.get('user_id') or token_data.get('sub')
+                        g.current_user = {
+                            'uid': uid,
+                            'email': token_data.get('email'),
+                            'name': token_data.get('name', 'Unknown')
+                        }
+                    
+                    print("🔍 TEST 5: Calling get_current_user...")
+                    current_user = get_current_user()
+                    print(f"✅ TEST 5 OK: {current_user.get('email') if current_user else 'None'}")
+                    
+                    return jsonify({
+                        "test": "SUCCESS - No recursion in manual auth flow",
+                        "user": current_user.get('email') if current_user else None
+                    })
+        
+        return jsonify({"test": "No auth header provided"})
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"❌ RECURSION IN TEST: {str(e)}")
+        print(f"📋 Traceback: {error_details}")
+        return jsonify({"test": "FAILED", "error": str(e), "traceback": error_details})
+
 @app.route("/upload-chunk", methods=["POST"])
 @require_auth
 def upload_chunk():

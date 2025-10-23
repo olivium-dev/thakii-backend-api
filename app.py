@@ -300,56 +300,31 @@ def upload_video():
     if file.filename == "":
         return jsonify({"error": "No selected file"}), 400
     
-    # Get current user from auth middleware
-    current_user = get_current_user()
-    if not current_user:
-        return jsonify({"error": "Authentication required"}), 401
-    
-    video_id = str(uuid.uuid4())
-    filename = file.filename
-
+    # Get current user from auth middleware - SIMPLIFIED TO AVOID RECURSION
     try:
-        # Upload video to S3 instead of local storage
-        video_key = s3_storage.upload_video(file, video_id, filename)
-        print(f"Video uploaded to S3: {video_key}")
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
         
-        # Create DB record in PostgreSQL with user information
-        task_data = postgres_db.create_video_task(
-            video_id, 
-            filename, 
-            current_user['uid'], 
-            current_user['email'], 
-            "in_queue"
-        )
-        print(f"Task created in PostgreSQL: {video_id} for user: {current_user['email']}")
+        video_id = str(uuid.uuid4())
+        filename = file.filename
         
-        # Notify via WebSocket
-        if websocket_manager:
-            websocket_manager.notify_task_update(current_user['uid'], {
-                'video_id': video_id,
-                'status': 'in_queue',
-                'filename': filename
-            })
-
-        # Trigger worker processing with enhanced error handling
-        trigger_success = trigger_worker_processing(
-            video_id=video_id,
-            user_id=current_user['uid'],
-            filename=filename,
-            s3_key=video_key
-        )
+        print(f"🎯 UPLOAD DEBUG: video_id={video_id}, user={current_user.get('email', 'unknown')}")
         
-        if not trigger_success:
-            print(f"⚠️ Worker trigger failed for {video_id}, but upload successful")
-
+        # MINIMAL UPLOAD - SKIP S3 AND DB FOR NOW TO ISOLATE RECURSION
         return jsonify({
             "video_id": video_id, 
-            "message": "Video uploaded to S3 and queued for processing",
-            "s3_key": video_key
+            "message": "MINIMAL UPLOAD TEST - NO S3/DB TO AVOID RECURSION",
+            "user": current_user.get('email', 'unknown'),
+            "filename": filename
         })
     
     except Exception as e:
-        print(f"Error uploading video: {str(e)}")
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"❌ UPLOAD ERROR: {str(e)}")
+        print(f"📋 Full traceback:")
+        print(error_details)
         return jsonify({"error": f"Failed to upload video: {str(e)}"}), 500
 
 @app.route("/upload-chunk", methods=["POST"])

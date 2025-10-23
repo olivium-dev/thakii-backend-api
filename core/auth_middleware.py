@@ -181,38 +181,55 @@ def verify_auth_token():
         return None, f"Token verification failed: {str(e)}"
 
 def require_auth(f):
-    """Decorator to require authentication for endpoints"""
+    """Decorator to require authentication for endpoints - FIXED VERSION"""
     @functools.wraps(f)
     def decorated_function(*args, **kwargs):
-        token_data, error = verify_auth_token()
-        
-        if error:
-            return jsonify({"error": "Authentication required", "message": error}), 401
-        
-        # Store user information in Flask's g object for use in the request
-        # Handle both Firebase and Custom token formats
-        token_type = token_data.get('_token_type', 'firebase')
-        
-        if token_type == 'custom':
-            # Custom token format
-            user_info = custom_token_manager.extract_user_info(token_data)
-            g.current_user = user_info
-        else:
-            # Firebase token format (uid/user_id/sub)
-            uid = token_data.get('uid') or token_data.get('user_id') or token_data.get('sub')
-            g.current_user = {
-                'uid': uid,
-                'email': token_data.get('email'),
-                'name': token_data.get('name', token_data.get('email', '').split('@')[0] if token_data.get('email') else 'Unknown'),
-                'picture': token_data.get('picture'),
-                'email_verified': token_data.get('email_verified', False),
-                'is_admin': token_data.get('email') in SUPER_ADMINS if token_data.get('email') else False,
-                'firebase_provider': token_data.get('firebase', {}).get('sign_in_provider') if isinstance(token_data.get('firebase'), dict) else None,
-                'auth_time': token_data.get('auth_time'),
-                'token_type': token_type
-            }
-        
-        return f(*args, **kwargs)
+        try:
+            # Prevent recursion by checking if we're already processing auth
+            if hasattr(g, '_auth_processing'):
+                return jsonify({"error": "Authentication recursion detected"}), 500
+            
+            # Set flag to prevent recursion
+            g._auth_processing = True
+            
+            token_data, error = verify_auth_token()
+            
+            if error:
+                return jsonify({"error": "Authentication required", "message": error}), 401
+            
+            # Store user information in Flask's g object for use in the request
+            # Handle both Firebase and Custom token formats
+            token_type = token_data.get('_token_type', 'firebase')
+            
+            if token_type == 'custom':
+                # Custom token format
+                user_info = custom_token_manager.extract_user_info(token_data)
+                g.current_user = user_info
+            else:
+                # Firebase token format (uid/user_id/sub)
+                uid = token_data.get('uid') or token_data.get('user_id') or token_data.get('sub')
+                g.current_user = {
+                    'uid': uid,
+                    'email': token_data.get('email'),
+                    'name': token_data.get('name', token_data.get('email', '').split('@')[0] if token_data.get('email') else 'Unknown'),
+                    'picture': token_data.get('picture'),
+                    'email_verified': token_data.get('email_verified', False),
+                    'is_admin': token_data.get('email') in SUPER_ADMINS if token_data.get('email') else False,
+                    'firebase_provider': token_data.get('firebase', {}).get('sign_in_provider') if isinstance(token_data.get('firebase'), dict) else None,
+                    'auth_time': token_data.get('auth_time'),
+                    'token_type': token_type
+                }
+            
+            # Clear the recursion flag before calling the function
+            delattr(g, '_auth_processing')
+            
+            return f(*args, **kwargs)
+            
+        except Exception as e:
+            # Make sure to clear the flag even if there's an error
+            if hasattr(g, '_auth_processing'):
+                delattr(g, '_auth_processing')
+            raise e
     
     return decorated_function
 

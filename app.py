@@ -424,6 +424,115 @@ def test_recursion_debug():
         print(f"📋 Traceback: {error_details}")
         return jsonify({"test": "FAILED", "error": str(e), "traceback": error_details})
 
+@app.route("/test-simple-auth", methods=["POST"])
+def test_simple_auth():
+    """Test with a simplified require_auth decorator"""
+    try:
+        print("🔍 TESTING SIMPLIFIED AUTH DECORATOR...")
+        
+        # Manual implementation of @require_auth logic
+        from core.auth_middleware import verify_auth_token
+        from core.custom_auth import custom_token_manager
+        from flask import g
+        
+        print("Step 1: Calling verify_auth_token...")
+        token_data, error = verify_auth_token()
+        
+        if error:
+            print(f"❌ Auth error: {error}")
+            return jsonify({"error": "Authentication required", "message": error}), 401
+        
+        print("Step 2: Processing token data...")
+        token_type = token_data.get('_token_type', 'firebase')
+        
+        if token_type == 'custom':
+            print("Step 3a: Processing custom token...")
+            user_info = custom_token_manager.extract_user_info(token_data)
+            g.current_user = user_info
+        else:
+            print("Step 3b: Processing firebase token...")
+            uid = token_data.get('uid') or token_data.get('user_id') or token_data.get('sub')
+            g.current_user = {
+                'uid': uid,
+                'email': token_data.get('email'),
+                'name': token_data.get('name', 'Unknown')
+            }
+        
+        print("Step 4: Calling get_current_user...")
+        current_user = get_current_user()
+        
+        print("✅ SUCCESS: Manual auth decorator works!")
+        return jsonify({
+            "test": "SUCCESS - Manual auth decorator works",
+            "user": current_user.get('email') if current_user else None
+        })
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"❌ ERROR IN MANUAL AUTH: {str(e)}")
+        print(f"📋 Traceback: {error_details}")
+        return jsonify({"test": "FAILED", "error": str(e)})
+
+@app.route("/upload-no-auth", methods=["POST"])
+def upload_no_auth():
+    """Upload endpoint with manual auth - NO DECORATOR"""
+    try:
+        print("🔍 UPLOAD WITH MANUAL AUTH (NO DECORATOR)")
+        
+        # Manual auth
+        from core.auth_middleware import verify_auth_token
+        from core.custom_auth import custom_token_manager
+        from flask import g
+        
+        token_data, error = verify_auth_token()
+        if error:
+            return jsonify({"error": "Authentication required", "message": error}), 401
+        
+        token_type = token_data.get('_token_type', 'firebase')
+        if token_type == 'custom':
+            user_info = custom_token_manager.extract_user_info(token_data)
+            g.current_user = user_info
+        else:
+            uid = token_data.get('uid') or token_data.get('user_id') or token_data.get('sub')
+            g.current_user = {
+                'uid': uid,
+                'email': token_data.get('email'),
+                'name': token_data.get('name', 'Unknown')
+            }
+        
+        current_user = get_current_user()
+        print(f"✅ Auth OK: {current_user.get('email')}")
+        
+        # Check file
+        if "file" not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+        
+        file = request.files["file"]
+        if file.filename == "":
+            return jsonify({"error": "No selected file"}), 400
+        
+        video_id = str(uuid.uuid4())
+        filename = file.filename
+        
+        print("🔍 Testing S3 upload...")
+        video_key = s3_storage.upload_video(file, video_id, filename)
+        print(f"✅ S3 OK: {video_key}")
+        
+        return jsonify({
+            "message": "SUCCESS - Manual auth upload works!",
+            "video_id": video_id,
+            "s3_key": video_key,
+            "user": current_user.get('email')
+        })
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"❌ ERROR IN MANUAL UPLOAD: {str(e)}")
+        print(f"📋 Traceback: {error_details}")
+        return jsonify({"error": f"Manual upload failed: {str(e)}"}), 500
+
 @app.route("/upload-chunk", methods=["POST"])
 @require_auth
 def upload_chunk():

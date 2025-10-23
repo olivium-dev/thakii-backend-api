@@ -8,6 +8,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
 from core.s3_storage import S3Storage
 from core.postgres_db import postgres_db
+from core.firestore_db import firestore_db  # Initialize Firebase on import
 from core.auth_middleware import require_auth, require_admin, get_current_user, is_super_admin, verify_auth_token
 from core.custom_auth import custom_token_manager
 from core.push_notification_service import push_service

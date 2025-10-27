@@ -108,6 +108,26 @@ class WebSocketManager:
         except Exception as e:
             logger.error(f"❌ Failed to send admin update: {e}")
     
+    def notify_batch_import_progress(self, user_id: str, progress_data: dict):
+        """
+        Send batch import progress update to specific user
+        
+        Args:
+            user_id: User ID to send update to
+            progress_data: Progress data with keys:
+                - video_name: Name of the video
+                - video_id: Video ID
+                - status: 'downloading' | 'uploading' | 'queued' | 'completed' | 'failed'
+                - progress_percent: 0-100
+                - error: Error message (optional, for failed status)
+        """
+        try:
+            room = f'user_{user_id}'
+            self.socketio.emit('batch_import_progress', progress_data, room=room)
+            logger.info(f"📦 Batch import progress sent to room {room}: {progress_data.get('video_name')} - {progress_data.get('status')}")
+        except Exception as e:
+            logger.error(f"❌ Failed to send batch import progress to user {user_id}: {e}")
+    
     def run(self, app, **kwargs):
         """Run the WebSocket server"""
         self.socketio.run(app, **kwargs)

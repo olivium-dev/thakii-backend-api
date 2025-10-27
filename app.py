@@ -16,6 +16,8 @@ from core.server_manager import server_manager
 from core.admin_manager import admin_manager
 from core.websocket_manager import init_websocket, get_websocket_manager
 from core.worker_manager import worker_manager
+from core.email_service import email_service
+from core.batch_import_service import BatchImportService
 
 load_dotenv()
 
@@ -45,6 +47,9 @@ s3_storage = S3Storage()
 
 # Initialize WebSocket
 websocket_manager = init_websocket(app)
+
+# Initialize Batch Import Service
+batch_import_service = BatchImportService()
 
 def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key: str) -> bool:
     """
@@ -428,6 +433,129 @@ def test_upload_video():
     except Exception as e:
         print(f"❌ TEST: Error uploading video: {str(e)}")
         return jsonify({"error": f"Failed to upload video: {str(e)}"}), 500
+
+
+# ==================== BATCH IMPORT ENDPOINTS ====================
+
+@app.route("/batch-import/list-videos", methods=["POST"])
+@require_auth
+def list_batch_import_videos():
+    """
+    List videos from a wolkesicher.de share URL
+    
+    Request body: {"share_url": "https://..."}
+    Returns: {"videos": [...], "total_count": N, "total_size": bytes}
+    """
+    try:
+        data = request.get_json()
+        if not data or 'share_url' not in data:
+            return jsonify({"error": "share_url is required"}), 400
+        
+        share_url = data['share_url']
+        print(f"📋 Listing videos from: {share_url}")
+        
+        # List videos using batch import service
+        result = batch_import_service.list_videos_from_share(share_url)
+        
+        if 'error' in result:
+            return jsonify(result), 400
+        
+        return jsonify(result), 200
+        
+    except Exception as e:
+        print(f"❌ Error listing batch import videos: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Failed to list videos: {str(e)}"}), 500
+
+
+@app.route("/batch-import/import-videos", methods=["POST"])
+@require_auth
+def batch_import_videos():
+    """
+    Import selected videos from wolkesicher.de
+    
+    Request body: {
+        "share_url": "...", 
+        "selected_videos": [{"name": "...", "download_url": "...", "size": N}, ...]
+    }
+    Returns: {"batch_id": "...", "imported_videos": [...]}
+    """
+    try:
+        # Get current user
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+        
+        data = request.get_json()
+        if not data or 'share_url' not in data or 'selected_videos' not in data:
+            return jsonify({"error": "share_url and selected_videos are required"}), 400
+        
+        share_url = data['share_url']
+        selected_videos = data['selected_videos']
+        
+        if not selected_videos or len(selected_videos) == 0:
+            return jsonify({"error": "No videos selected"}), 400
+        
+        print(f"📦 Starting batch import of {len(selected_videos)} videos")
+        print(f"   User: {current_user['email']}")
+        print(f"   Share: {share_url}")
+        
+        batch_id = str(uuid.uuid4())
+        imported_videos = []
+        failed_videos = []
+        
+        # Import each video
+        for i, video_info in enumerate(selected_videos, 1):
+            print(f"\n[{i}/{len(selected_videos)}] Processing: {video_info['name']}")
+            
+            try:
+                result = batch_import_service.download_and_import_video(
+                    share_url=share_url,
+                    video_info=video_info,
+                    user_id=current_user['uid'],
+                    user_email=current_user['email'],
+                    s3_storage=s3_storage,
+                    postgres_db=postgres_db,
+                    websocket_manager=websocket_manager,
+                    trigger_worker_fn=trigger_worker_processing
+                )
+                
+                if result and result['status'] == 'success':
+                    imported_videos.append(result)
+                else:
+                    failed_videos.append(result if result else {
+                        'video_name': video_info['name'],
+                        'status': 'failed',
+                        'error': 'Unknown error'
+                    })
+                    
+            except Exception as e:
+                print(f"   ❌ Failed to import {video_info['name']}: {e}")
+                failed_videos.append({
+                    'video_name': video_info['name'],
+                    'status': 'failed',
+                    'error': str(e)
+                })
+        
+        print(f"\n✅ Batch import completed:")
+        print(f"   Success: {len(imported_videos)}")
+        print(f"   Failed: {len(failed_videos)}")
+        
+        return jsonify({
+            "batch_id": batch_id,
+            "total_count": len(selected_videos),
+            "success_count": len(imported_videos),
+            "failed_count": len(failed_videos),
+            "imported_videos": imported_videos,
+            "failed_videos": failed_videos
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Error in batch import: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Failed to import videos: {str(e)}"}), 500
 
 
 @app.route("/upload-chunk", methods=["POST"])
@@ -1040,7 +1168,7 @@ def check_worker_health():
 def internal_task_update():
     """
     Internal endpoint for worker to notify about task updates
-    This triggers WebSocket notifications to clients
+    This triggers WebSocket notifications to clients and sends email notifications
     """
     try:
         data = request.get_json()
@@ -1057,18 +1185,354 @@ def internal_task_update():
         if not task:
             return jsonify({"error": "Task not found"}), 404
         
+        # Prepare update data
+        update_data = {'status': status}
+        
+        # Add pdf_url if provided
+        if 'pdf_url' in data and data['pdf_url']:
+            update_data['pdf_url'] = data['pdf_url']
+            
+        # Add error_message if provided
+        if 'error_message' in data and data['error_message']:
+            update_data['error_message'] = data['error_message']
+        
+        # Update task in database
+        postgres_db.update_video_task(video_id, update_data)
+        
+        # Get updated task data for notifications
+        task = postgres_db.get_video_task(video_id)
+        
         # Send WebSocket notification
         if websocket_manager:
             websocket_manager.notify_task_update(user_id, task)
         
+        # Send email notification for completed or failed tasks
+        if status in ['completed', 'failed', 'done']:
+            try:
+                # Get user email from task data (already stored in database)
+                user_email = task.get('user_email')
+                
+                if user_email:
+                    # Normalize status
+                    email_status = 'completed' if status in ['completed', 'done'] else 'failed'
+                    
+                    # Prepare email data
+                    filename = task.get('filename', 'Unknown')
+                    error_message = task.get('error_message') if email_status == 'failed' else None
+                    pdf_url = task.get('pdf_url') if email_status == 'completed' else None
+                    
+                    # Send email notification
+                    email_sent = email_service.send_processing_complete_notification(
+                        user_email=user_email,
+                        video_id=video_id,
+                        filename=filename,
+                        status=email_status,
+                        error_message=error_message,
+                        pdf_download_url=pdf_url
+                    )
+                    
+                    if email_sent:
+                        print(f"✅ Email notification sent to {user_email} for video {video_id}")
+                    else:
+                        print(f"⚠️  Failed to send email notification to {user_email}")
+                else:
+                    print(f"⚠️  No email found for user {user_id}")
+                    
+            except Exception as email_error:
+                print(f"❌ Email notification error: {email_error}")
+                # Don't fail the entire request if email fails
+        
         return jsonify({
             "success": True,
-            "message": "WebSocket notification sent"
+            "message": "Notifications sent",
+            "websocket_sent": True,
+            "email_attempted": status in ['completed', 'failed', 'done']
         })
         
     except Exception as e:
         print(f"Error in internal task update: {e}")
         return jsonify({"error": str(e)}), 500
+
+@app.route("/internal/get-pending-tasks", methods=["GET"])
+def internal_get_pending_tasks():
+    """
+    Internal endpoint for workers to get pending tasks
+    This allows remote workers to access the task queue without direct database access
+    """
+    try:
+        limit = request.args.get('limit', 5, type=int)
+        
+        # Get pending tasks from database (in_queue and uploaded status)
+        in_queue_tasks = postgres_db.get_tasks_by_status('in_queue')
+        uploaded_tasks = postgres_db.get_tasks_by_status('uploaded')
+        
+        # Combine and limit results
+        pending_tasks = (in_queue_tasks + uploaded_tasks)[:limit]
+        
+        return jsonify({
+            "success": True,
+            "tasks": pending_tasks,
+            "count": len(pending_tasks)
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get pending tasks: {str(e)}"}), 500
+
+@app.route("/internal/get-task/<video_id>", methods=["GET"])
+def internal_get_task(video_id):
+    """
+    Internal endpoint for workers to get specific task details
+    """
+    try:
+        task = postgres_db.get_video_task(video_id)
+        
+        if not task:
+            return jsonify({"error": "Task not found"}), 404
+        
+        return jsonify({
+            "success": True,
+            "task": task
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get task: {str(e)}"}), 500
+
+@app.route("/internal/download-pdf/<video_id>", methods=["GET"])
+def internal_download_pdf(video_id):
+    """
+    Internal endpoint to download PDF from S3
+    Used by email service to get PDF content for attachments
+    """
+    try:
+        # Get task to find PDF URL
+        task = postgres_db.get_video_task(video_id)
+        
+        if not task:
+            return jsonify({"error": "Task not found"}), 404
+        
+        pdf_url = task.get('pdf_url')
+        if not pdf_url:
+            return jsonify({"error": "No PDF URL found"}), 404
+        
+        # Extract S3 key from URL
+        if 'amazonaws.com/' in pdf_url:
+            s3_key = pdf_url.split('amazonaws.com/')[-1]
+        else:
+            return jsonify({"error": "Invalid PDF URL format"}), 400
+        
+        # Download PDF from S3
+        s3_storage = S3Storage()
+        pdf_content = s3_storage.download_file(s3_key)
+        
+        if not pdf_content:
+            return jsonify({"error": "Failed to download PDF from S3"}), 500
+        
+        # Return PDF as binary response
+        from flask import send_file
+        from io import BytesIO
+        
+        return send_file(
+            BytesIO(pdf_content),
+            mimetype='application/pdf',
+            as_attachment=False,
+            download_name=f"{video_id}.pdf"
+        )
+        
+    except Exception as e:
+        print(f"Error downloading PDF: {e}")
+        return jsonify({"error": f"Failed to download PDF: {str(e)}"}), 500
+
+@app.route("/admin/email/test", methods=["POST"])
+@require_admin
+def test_email_service():
+    """Test email service configuration"""
+    try:
+        data = request.get_json()
+        recipient = data.get('recipient')
+        
+        if not recipient:
+            return jsonify({"error": "Recipient email required"}), 400
+        
+        # Send test email
+        success = email_service.send_test_email(recipient)
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "message": f"Test email sent to {recipient}"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "message": "Failed to send test email. Check email configuration."
+            }), 500
+            
+    except Exception as e:
+        return jsonify({"error": f"Email test failed: {str(e)}"}), 500
+
+@app.route("/admin/email/config", methods=["GET"])
+@require_admin
+def get_email_config():
+    """Get current email service configuration (without sensitive data)"""
+    try:
+        config = {
+            "configured": email_service.is_configured,
+            "service_type": "Brevo API",
+            "api_url": email_service.api_url,
+            "from_email": email_service.from_email,
+            "from_name": email_service.from_name,
+            "additional_recipients": email_service.additional_recipients,
+            "has_api_key": bool(email_service.api_key),
+            "api_key_preview": f"{email_service.api_key[:20]}..." if email_service.api_key else None
+        }
+        
+        return jsonify(config)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get email config: {str(e)}"}), 500
+
+@app.route("/admin/email/recipients", methods=["POST"])
+@require_admin
+def update_notification_recipients():
+    """Update additional notification recipients"""
+    try:
+        data = request.get_json()
+        emails = data.get('emails', [])
+        
+        # Validate email addresses
+        import re
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        
+        valid_emails = []
+        for email in emails:
+            if re.match(email_pattern, email.strip()):
+                valid_emails.append(email.strip())
+            else:
+                return jsonify({"error": f"Invalid email address: {email}"}), 400
+        
+        # Update database configuration (persistent)
+        success = email_service.update_additional_recipients_in_db(valid_emails)
+        
+        if not success:
+            return jsonify({"error": "Failed to save recipients to database"}), 500
+        
+        # Also update in-memory configuration for immediate use
+        email_service.additional_recipients = valid_emails
+        
+        return jsonify({
+            "success": True,
+            "message": f"Updated notification recipients",
+            "recipients": valid_emails
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to update recipients: {str(e)}"}), 500
+
+@app.route("/admin/email/recipients/add", methods=["POST"])
+@require_admin
+def add_notification_recipient():
+    """Add a single email to notification recipients list"""
+    try:
+        data = request.get_json()
+        new_email = data.get('email')
+        
+        if not new_email:
+            return jsonify({"error": "Email address is required"}), 400
+        
+        # Validate email address
+        import re
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        
+        if not re.match(email_pattern, new_email.strip()):
+            return jsonify({"error": f"Invalid email address: {new_email}"}), 400
+        
+        # Get current recipients from database
+        current_recipients = email_service.get_additional_recipients_from_db()
+        
+        # Check if email already exists
+        if new_email.strip() in current_recipients:
+            return jsonify({
+                "error": f"Email {new_email} is already in the recipients list"
+            }), 400
+        
+        # Add new email to the list
+        updated_recipients = current_recipients + [new_email.strip()]
+        
+        # Update database configuration
+        success = email_service.update_additional_recipients_in_db(updated_recipients)
+        
+        if not success:
+            return jsonify({"error": "Failed to save recipient to database"}), 500
+        
+        # Update in-memory configuration
+        email_service.additional_recipients = updated_recipients
+        
+        return jsonify({
+            "success": True,
+            "message": f"Added {new_email} to notification recipients",
+            "recipients": updated_recipients
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to add recipient: {str(e)}"}), 500
+
+@app.route("/admin/email/recipients/remove", methods=["POST"])
+@require_admin
+def remove_notification_recipient():
+    """Remove a single email from notification recipients list"""
+    try:
+        data = request.get_json()
+        email_to_remove = data.get('email')
+        
+        if not email_to_remove:
+            return jsonify({"error": "Email address is required"}), 400
+        
+        # Get current recipients from database
+        current_recipients = email_service.get_additional_recipients_from_db()
+        
+        # Check if email exists in the list
+        if email_to_remove.strip() not in current_recipients:
+            return jsonify({
+                "error": f"Email {email_to_remove} is not in the recipients list"
+            }), 404
+        
+        # Remove email from the list
+        updated_recipients = [email for email in current_recipients if email != email_to_remove.strip()]
+        
+        # Update database configuration
+        success = email_service.update_additional_recipients_in_db(updated_recipients)
+        
+        if not success:
+            return jsonify({"error": "Failed to save changes to database"}), 500
+        
+        # Update in-memory configuration
+        email_service.additional_recipients = updated_recipients
+        
+        return jsonify({
+            "success": True,
+            "message": f"Removed {email_to_remove} from notification recipients",
+            "recipients": updated_recipients
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to remove recipient: {str(e)}"}), 500
+
+@app.route("/admin/email/recipients", methods=["GET"])
+@require_admin
+def get_notification_recipients():
+    """Get list of all notification recipients"""
+    try:
+        # Get recipients from database (persistent storage)
+        recipients = email_service.get_additional_recipients_from_db()
+        
+        return jsonify({
+            "success": True,
+            "recipients": recipients,
+            "count": len(recipients)
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get recipients: {str(e)}"}), 500
 
 if __name__ == "__main__":
     # Ensure super admins exist in database on startup

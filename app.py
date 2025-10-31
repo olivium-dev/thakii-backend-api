@@ -56,6 +56,11 @@ def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key
     Trigger worker processing via HTTP with primary/fallback support
     Uses worker_manager for intelligent routing and automatic failover
     """
+    print(f"🚀🚀🚀 TRIGGER_WORKER_PROCESSING CALLED for video {video_id} 🚀🚀🚀")
+    print(f"   User ID: {user_id}")
+    print(f"   Filename: {filename}")
+    print(f"   S3 Key: {s3_key}")
+    
     payload = {
         "video_id": video_id,
         "user_id": user_id,
@@ -63,12 +68,19 @@ def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key
         "s3_key": s3_key
     }
     
+    print(f"📦 Payload prepared: {payload}")
+    print(f"🔧 Calling worker_manager.trigger_with_fallback()...")
+    
     # Trigger worker with automatic fallback
     result = worker_manager.trigger_with_fallback(payload)
+    
+    print(f"📊 Result from trigger_with_fallback: {result}")
     
     if result['success']:
         print(f"✅ Worker triggered successfully: {video_id}")
         print(f"   Worker used: {result['worker_used']}")
+        print(f"   Worker URL: {result.get('worker_url', 'N/A')}")
+        print(f"   Status code: {result.get('status_code', 'N/A')}")
         
         # Update database with worker information
         postgres_db.update_video_task(video_id, {
@@ -77,10 +89,13 @@ def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key
             'worker_attempts': 1
         })
         
+        print(f"✅ Database updated for video {video_id}")
         return True
     else:
         print(f"❌ All workers failed for video {video_id}")
         print(f"   Error: {result['error']}")
+        print(f"   Worker used: {result.get('worker_used', 'N/A')}")
+        print(f"   Status code: {result.get('status_code', 'N/A')}")
         
         # Update task status to failed
         error_message = result['error'] or 'Worker service unavailable'
@@ -100,6 +115,7 @@ def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key
                 'error_message': error_message
             })
         
+        print(f"❌ Database marked as failed for video {video_id}")
         return False
 
 @app.route("/health", methods=["GET"])
@@ -339,15 +355,17 @@ def upload_video():
             })
 
         # Trigger worker processing with enhanced error handling
+        print(f"📢 UPLOAD ENDPOINT: About to call trigger_worker_processing for {video_id}")
         trigger_success = trigger_worker_processing(
             video_id=video_id,
             user_id=current_user['uid'],
             filename=filename,
             s3_key=video_key
         )
+        print(f"📢 UPLOAD ENDPOINT: trigger_worker_processing returned {trigger_success}")
         
         if not trigger_success:
-            print(f"⚠️ Worker trigger failed for {video_id}, but upload successful")
+            print(f"⚠️⚠️⚠️ Worker trigger failed for {video_id}, but upload successful")
 
         return jsonify({
             "video_id": video_id, 

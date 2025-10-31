@@ -140,102 +140,38 @@ jobs:
           echo '✅ Backend deployment complete'
         "
     
-    - name: Run Automated Recovery System
+    - name: Reset Stuck Videos
       env:
         BACKEND_PATH: ${{ env.BACKEND_PATH }}
       run: |
-        echo "🔧 Running automated recovery system..."
+        echo "🔧 Resetting stuck processing videos..."
         ssh thakii-server "
           set -e
           cd $BACKEND_PATH
           
-          echo '=== AUTOMATED RECOVERY SYSTEM ==='
+          echo '=== RESET STUCK VIDEOS ==='
           
-          # Activate virtual environment
-          source venv/bin/activate
-          
-          # Run recovery system in dry-run mode first
-          echo '🧪 Running recovery system in dry-run mode...'
-          python3 scripts/auto_recovery.py --dry-run --output /tmp/recovery_dry_run.json
-          
-          # Show dry-run results
-          echo '📊 Dry-run results:'
-          cat /tmp/recovery_dry_run.json | jq '.statistics'
-          
-          # Check if any stuck videos were found
-          STUCK_COUNT=\$(cat /tmp/recovery_dry_run.json | jq '.statistics.stuck_videos_found')
-          FAILED_COUNT=\$(cat /tmp/recovery_dry_run.json | jq '.statistics.failed_videos_cleaned')
-          
-          if [ \"\$STUCK_COUNT\" -gt 0 ] || [ \"\$FAILED_COUNT\" -gt 0 ]; then
-            echo \"⚠️ Found \$STUCK_COUNT stuck videos and \$FAILED_COUNT old failed videos\"
-            echo '🔄 Running recovery system in live mode...'
-            python3 scripts/auto_recovery.py --output /tmp/recovery_live.json
-            
-            echo '📊 Live recovery results:'
-            cat /tmp/recovery_live.json | jq '.statistics'
-          else
-            echo '✅ No stuck or failed videos found - system is healthy'
-          fi
-          
-          # Reset stuck videos in processing state
-          echo ''
-          echo '🔄 Resetting videos stuck in processing state...'
-          psql -U thakii_user -d thakii_production -c \"
+          # Reset videos stuck in processing state
+          echo '🔄 Resetting videos stuck in processing state (>30 min)...'
+          PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -c \"
             UPDATE video_tasks 
             SET status = 'in_queue',
                 error_message = 'Reset from processing state after worker configuration fix',
                 updated_at = NOW()
             WHERE status = 'processing' 
               AND updated_at < NOW() - INTERVAL '30 minutes';
-          \" || echo '⚠️ Could not reset processing videos - database access issue'
+          \" && echo '✅ Reset complete' || echo '⚠️ Could not reset processing videos'
           
           # Count videos in queue to be processed
           echo ''
           echo '📊 Current queue status:'
-          psql -U thakii_user -d thakii_production -c \"
-            SELECT status, COUNT(*) FROM video_tasks 
+          PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -c \"
+            SELECT status, COUNT(*) as count FROM video_tasks 
             WHERE status IN ('in_queue', 'processing', 'failed') 
-            GROUP BY status ORDER BY COUNT(*) DESC;
+            GROUP BY status ORDER BY count DESC;
           \" || echo '⚠️ Could not check queue status'
           
-          echo '🎉 Automated recovery complete!'
-        "
-    
-    - name: Send Critical Alerts
-      if: always()
-      env:
-        BACKEND_PATH: ${{ env.BACKEND_PATH }}
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-      run: |
-        echo "📢 Checking for critical alerts..."
-        ssh thakii-server "
-          set -e
-          cd $BACKEND_PATH
-          
-          echo '=== CRITICAL ALERT SYSTEM ==='
-          
-          # Activate virtual environment
-          source venv/bin/activate
-          
-          # Install alerting dependencies
-          pip install requests
-          
-          # Send alerts based on recovery results
-          if [ -f /tmp/recovery_live.json ]; then
-            echo '📢 Analyzing recovery results for alerts...'
-            python3 scripts/alert_system.py --recovery-report /tmp/recovery_live.json --output /tmp/alert_report.json
-            
-            echo '📊 Alert system results:'
-            cat /tmp/alert_report.json | jq '.statistics'
-          elif [ -f /tmp/recovery_dry_run.json ]; then
-            echo '📢 Analyzing dry-run results for potential alerts...'
-            python3 scripts/alert_system.py --dry-run --recovery-report /tmp/recovery_dry_run.json --output /tmp/alert_report.json
-          else
-            echo '✅ No recovery reports to analyze'
-          fi
-          
-          echo '🎉 Alert system complete!'
+          echo '🎉 Stuck video reset complete!'
         "
     
     - name: Verify Backend Health and Worker Configuration

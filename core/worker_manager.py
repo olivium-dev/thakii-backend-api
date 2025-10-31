@@ -173,38 +173,31 @@ class WorkerManager:
             return (None, 'none')
         
         # Mode: round-robin - alternate between workers (future enhancement)
-        # For now, treat as primary-with-fallback
-        # FIXED: Avoid infinite recursion by explicitly handling this case
-        if self.priority_mode == 'round-robin':
-            # Temporarily use primary-with-fallback logic for round-robin
-            # Try primary first
-            if self.primary_worker_url:
-                if not check_health:
-                    return (self.primary_worker_url, 'primary')
-                
-                primary_health = self.check_worker_health(self.primary_worker_url)
-                if primary_health['healthy']:
-                    return (self.primary_worker_url, 'primary')
-            
-            # Fallback to secondary
-            if self.fallback_worker_url:
-                if not check_health:
-                    return (self.fallback_worker_url, 'fallback')
-                
-                fallback_health = self.check_worker_health(self.fallback_worker_url)
-                if fallback_health['healthy']:
-                    return (self.fallback_worker_url, 'fallback')
-            
-            return (None, 'none')
-        
-        # Unknown mode - default to primary-only
+        # For now, treat as primary-with-fallback (avoid recursion)
+        # Try primary first
         if self.primary_worker_url:
             if not check_health:
                 return (self.primary_worker_url, 'primary')
             
-            health = self.check_worker_health(self.primary_worker_url)
-            if health['healthy']:
+            primary_health = self.check_worker_health(self.primary_worker_url)
+            if primary_health['healthy']:
+                print(f"✅ Primary worker healthy (response: {primary_health['response_time']:.2f}s)")
                 return (self.primary_worker_url, 'primary')
+            else:
+                print(f"⚠️ Primary worker unhealthy: {primary_health['error']}")
+        
+        # Fallback to secondary
+        if self.fallback_worker_url:
+            if not check_health:
+                print(f"🔄 Using fallback worker (health check disabled)")
+                return (self.fallback_worker_url, 'fallback')
+            
+            fallback_health = self.check_worker_health(self.fallback_worker_url)
+            if fallback_health['healthy']:
+                print(f"✅ Fallback worker healthy (response: {fallback_health['response_time']:.2f}s)")
+                return (self.fallback_worker_url, 'fallback')
+            else:
+                print(f"❌ Fallback worker also unhealthy: {fallback_health['error']}")
         
         return (None, 'none')
     

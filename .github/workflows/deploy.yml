@@ -123,6 +123,28 @@ jobs:
           echo 'Worker configuration:'
           grep -E 'PRIMARY_WORKER_URL|FALLBACK_WORKER_URL|WORKER_PRIORITY_MODE' .env || echo 'Warning: Worker configuration not found'
           
+          # Configure systemd service to load .env file
+          echo '🔧 Configuring systemd service to load .env file...'
+          
+          # Check if EnvironmentFile is already in the service file
+          if ! sudo grep -q 'EnvironmentFile=' /etc/systemd/system/thakii-backend.service; then
+            echo 'Adding EnvironmentFile to systemd service...'
+            
+            # Create a backup of the service file
+            sudo cp /etc/systemd/system/thakii-backend.service /etc/systemd/system/thakii-backend.service.backup
+            
+            # Add EnvironmentFile directive after [Service] section
+            sudo sed -i '/^\[Service\]/a EnvironmentFile=/home/ec2-user/thakii-backend-api/.env' /etc/systemd/system/thakii-backend.service
+            
+            echo '✅ Added EnvironmentFile to systemd service'
+          else
+            echo '✅ EnvironmentFile already configured in systemd service'
+          fi
+          
+          # Reload systemd configuration
+          echo '🔄 Reloading systemd configuration...'
+          sudo systemctl daemon-reload
+          
           # Restart backend service
           echo '🔄 Restarting backend service...'
           sudo systemctl restart thakii-backend.service
@@ -199,6 +221,10 @@ jobs:
           set -e
           cd $BACKEND_PATH
           
+          # Check systemd service configuration
+          echo 'Checking systemd service configuration:'
+          sudo systemctl show thakii-backend.service --property=EnvironmentFiles || echo 'No EnvironmentFiles configured'
+          
           # Check backend logs for worker manager initialization
           echo 'Checking backend logs for worker configuration:'
           sudo journalctl -u thakii-backend.service --no-pager -n 50 | grep -E 'Worker Manager initialized|Primary Worker:|Fallback Worker:' || echo 'Worker manager logs not found'
@@ -206,6 +232,11 @@ jobs:
           # Check .env file for worker configuration
           echo 'Checking .env file for worker URLs:'
           grep -E 'PRIMARY_WORKER_URL|FALLBACK_WORKER_URL|WORKER_PRIORITY_MODE' .env || echo 'Worker URLs not found in .env'
+          
+          # Test if environment variables are actually loaded by the service
+          echo 'Testing if backend can access worker environment variables:'
+          source venv/bin/activate
+          python3 -c 'import sys; sys.path.append(\".\"); from core.worker_manager import worker_manager; print(f\"Primary: {worker_manager.primary_worker_url or \"NOT SET\"}\"); print(f\"Fallback: {worker_manager.fallback_worker_url or \"NOT SET\"}\")' || echo '⚠️ Could not test worker manager configuration'
         "
     
     - name: Test Worker Triggering

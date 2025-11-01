@@ -1,0 +1,99 @@
+name: Fix thakii-3 PostgreSQL Client
+
+on:
+  workflow_dispatch:
+
+jobs:
+  install_postgresql:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Setup Cloudflare
+      run: |
+        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared.deb
+        sudo apt-get update && sudo apt-get install -y sshpass
+    
+    - name: Install PostgreSQL Client on thakii-3
+      run: |
+        echo "🔧 INSTALLING POSTGRESQL CLIENT ON THAKII-3"
+        echo "==========================================="
+        
+        sshpass -p "12344321" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          -o ProxyCommand="cloudflared access ssh --hostname ssh-thakii-3.fanusdigital.site" \
+          fanusdigital@ssh-thakii-3.fanusdigital.site "
+          
+          echo '=== INSTALLING POSTGRESQL CLIENT VIA HOMEBREW ==='
+          /opt/homebrew/bin/brew install postgresql@15
+          
+          echo ''
+          echo '=== ADDING POSTGRESQL TO PATH ==='
+          echo 'export PATH=\"/opt/homebrew/opt/postgresql@15/bin:\$PATH\"' >> ~/.zshrc
+          
+          echo ''
+          echo '=== INSTALLING PYTHON POSTGRESQL DEPENDENCIES ==='
+          cd ~/thakii-worker-service
+          
+          # Activate virtual environment if it exists
+          if [ -d venv ]; then
+            source venv/bin/activate
+            echo 'Virtual environment activated'
+          else
+            echo 'No virtual environment found, using system Python'
+          fi
+          
+          # Install psycopg2
+          pip3 install psycopg2-binary
+          
+          echo ''
+          echo '=== TESTING POSTGRESQL CLIENT ==='
+          export PATH=\"/opt/homebrew/opt/postgresql@15/bin:\$PATH\"
+          
+          # Test psql command
+          psql --version
+          
+          echo ''
+          echo '=== TESTING POSTGRESQL CONNECTION ==='
+          PGPASSWORD='P@ssw0rd768_DB' psql -h localhost -p 15432 -U thakii_user -d thakii_production -c 'SELECT NOW() as test_time, COUNT(*) as video_count FROM video_tasks;'
+          
+          echo ''
+          echo '=== TESTING PYTHON POSTGRESQL CONNECTION ==='
+          python3 -c \"
+import psycopg2
+try:
+    conn = psycopg2.connect(
+        host='localhost',
+        port='15432', 
+        dbname='thakii_production',
+        user='thakii_user',
+        password='P@ssw0rd768_DB'
+    )
+    cur = conn.cursor()
+    cur.execute('SELECT COUNT(*) FROM video_tasks WHERE status = \\\"in_queue\\\";')
+    count = cur.fetchone()[0]
+    print(f'✅ Python PostgreSQL connection successful! Found {count} videos in queue.')
+    conn.close()
+except Exception as e:
+    print(f'❌ Python PostgreSQL connection failed: {e}')
+\"
+          
+          echo ''
+          echo '=== RESTARTING WORKER SERVICE ==='
+          # Kill existing worker
+          pkill -f 'python.*api_server' || echo 'No worker to kill'
+          
+          # Start worker with proper PATH
+          cd ~/thakii-worker-service
+          export PATH=\"/opt/homebrew/opt/postgresql@15/bin:\$PATH\"
+          nohup python3 api_server.py > worker.log 2>&1 &
+          
+          echo 'Worker restarted with PostgreSQL support'
+          sleep 3
+          
+          # Check if worker is running
+          ps aux | grep 'python.*api_server' | grep -v grep && echo '✅ Worker is running' || echo '❌ Worker failed to start'
+          
+          echo ''
+          echo '=== TESTING WORKER HEALTH ==='
+          curl -s http://localhost:8000/health | python3 -m json.tool || echo 'Worker health check failed'
+        "

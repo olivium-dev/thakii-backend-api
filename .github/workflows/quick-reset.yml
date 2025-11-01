@@ -1,0 +1,50 @@
+name: Quick Reset Queue
+
+on:
+  workflow_dispatch:
+
+env:
+  SERVER_HOST: thakii-02.fds-1.com
+  SERVER_USER: ec2-user
+
+jobs:
+  reset_queue:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Setup SSH
+      run: |
+        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared.deb
+        mkdir -p ~/.ssh
+        echo "${{ secrets.thakii_ssh_private_key }}" > ~/.ssh/thakii-key
+        chmod 600 ~/.ssh/thakii-key
+        
+        echo "Host thakii-server" >> ~/.ssh/config
+        echo "  HostName $SERVER_HOST" >> ~/.ssh/config
+        echo "  User $SERVER_USER" >> ~/.ssh/config
+        echo "  IdentityFile ~/.ssh/thakii-key" >> ~/.ssh/config
+        echo "  ProxyCommand cloudflared access ssh --hostname %h" >> ~/.ssh/config
+        echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+        chmod 600 ~/.ssh/config
+    
+    - name: Reset Queue
+      run: |
+        ssh thakii-server "
+          echo 'Resetting all queued videos to failed...'
+          PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -c \"
+            UPDATE video_tasks 
+            SET status = 'failed',
+                error_message = 'Reset for fresh testing - $(date)',
+                updated_at = NOW()
+            WHERE status IN ('in_queue', 'processing', 'uploaded');
+          \"
+          
+          echo 'Current status after reset:'
+          PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -c \"
+            SELECT status, COUNT(*) as count 
+            FROM video_tasks 
+            GROUP BY status 
+            ORDER BY count DESC;
+          \"
+        "

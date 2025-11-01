@@ -2,6 +2,11 @@ name: Fix thakii-3 PostgreSQL Client
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/fix-thakii3-postgresql-client.yml'
 
 jobs:
   install_postgresql:

@@ -1,0 +1,53 @@
+name: Check systemd.log File
+
+on:
+  workflow_dispatch:
+
+env:
+  SERVER_HOST: thakii-02.fds-1.com
+  SERVER_USER: ec2-user
+  BACKEND_PATH: /home/ec2-user/thakii-backend-api
+
+jobs:
+  check_log:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup Cloudflare Tunnel for SSH
+      run: |
+        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared.deb
+        mkdir -p ~/.ssh
+        echo "${{ secrets.thakii_ssh_private_key }}" > ~/.ssh/thakii-key
+        chmod 600 ~/.ssh/thakii-key
+        
+        echo "Host thakii-server" >> ~/.ssh/config
+        echo "  HostName $SERVER_HOST" >> ~/.ssh/config
+        echo "  User $SERVER_USER" >> ~/.ssh/config
+        echo "  IdentityFile ~/.ssh/thakii-key" >> ~/.ssh/config
+        echo "  ProxyCommand cloudflared access ssh --hostname %h" >> ~/.ssh/config
+        echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+        chmod 600 ~/.ssh/config
+    
+    - name: Check systemd.log File
+      run: |
+        echo "📋 Checking systemd.log file for backend logs..."
+        ssh thakii-server "
+          echo '=== systemd.log file tail (last 100 lines) ==='
+          tail -100 /home/ec2-user/thakii-backend-api/systemd.log
+          
+          echo ''
+          echo '=== Searching for debug upload (d860d117) ==='
+          grep 'd860d117' /home/ec2-user/thakii-backend-api/systemd.log | tail -20
+          
+          echo ''
+          echo '=== Searching for TRIGGER_WORKER_PROCESSING ==='
+          grep 'TRIGGER_WORKER_PROCESSING' /home/ec2-user/thakii-backend-api/systemd.log | tail -10
+          
+          echo ''
+          echo '=== Searching for UPLOAD ENDPOINT ==='
+          grep 'UPLOAD ENDPOINT' /home/ec2-user/thakii-backend-api/systemd.log | tail -10
+        "

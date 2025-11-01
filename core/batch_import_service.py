@@ -31,10 +31,25 @@ class BatchImportService:
     
     def extract_share_token(self, url: str) -> str:
         """Extract share token from URL (format: /s/TOKEN)"""
-        match = re.search(r'/s/([^/]+)', url)
+        # Handle URLs with query parameters like ?path=...
+        base_url = url.split('?')[0]  # Remove query parameters for token extraction
+        match = re.search(r'/s/([^/]+)', base_url)
         if match:
             return match.group(1)
         raise ValueError(f"Could not extract share token from URL: {url}")
+    
+    def extract_path_from_url(self, url: str) -> str:
+        """Extract path parameter from URL if present"""
+        from urllib.parse import urlparse, parse_qs, unquote
+        parsed = urlparse(url)
+        if parsed.query:
+            query_params = parse_qs(parsed.query)
+            if 'path' in query_params:
+                # Decode the URL-encoded path
+                path = unquote(query_params['path'][0])
+                # Remove leading slash if present
+                return path.lstrip('/')
+        return ""
     
     def is_video_file(self, filename: str) -> bool:
         """Check if file is a video based on extension"""
@@ -57,10 +72,16 @@ class BatchImportService:
         try:
             base_url = self.extract_base_url(share_url)
             share_token = self.extract_share_token(share_url)
+            path = self.extract_path_from_url(share_url)
+            
+            # Build WebDAV URL with path if present
             webdav_url = f"{base_url}/public.php/webdav/"
+            if path:
+                webdav_url += path + "/"
             
             print(f"   Base URL: {base_url}")
             print(f"   Share Token: {share_token}")
+            print(f"   Path: {path}")
             print(f"   WebDAV URL: {webdav_url}")
             
             # WebDAV authentication: token as username, empty password

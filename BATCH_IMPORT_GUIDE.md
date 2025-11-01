@@ -305,3 +305,6 @@ scp -r dist/* thakii-02:/var/www/thakii-frontend/
 - [WebSocket Architecture](WEBSOCKET_FINAL_SOLUTION.md)
 - [Worker Service Documentation](../thakii-worker-service/README.md)
 
+
+
+

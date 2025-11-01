@@ -245,3 +245,7 @@ echo "  4. Monitor logs: sudo journalctl -u thakii-api.service -f"
 echo ""
 print_success "Deployment complete!"
 
+
+
+
+

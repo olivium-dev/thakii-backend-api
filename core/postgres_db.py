@@ -528,6 +528,52 @@ class PostgresDB:
         finally:
             self.pool.putconn(conn)
     
+    # ========== EMAIL CONFIGURATION OPERATIONS ==========
+    
+    def get_email_config(self, config_key: str) -> Optional[str]:
+        """Get email configuration value"""
+        conn = self.pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT config_value FROM email_notification_config 
+                    WHERE config_key = %s
+                """, (config_key,))
+                result = cur.fetchone()
+                return result[0] if result else None
+        finally:
+            self.pool.putconn(conn)
+    
+    def set_email_config(self, config_key: str, config_value: str, description: str = None) -> bool:
+        """Set email configuration value"""
+        conn = self.pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO email_notification_config (config_key, config_value, description)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (config_key) 
+                    DO UPDATE SET 
+                        config_value = EXCLUDED.config_value,
+                        description = COALESCE(EXCLUDED.description, email_notification_config.description),
+                        updated_at = CURRENT_TIMESTAMP
+                """, (config_key, config_value, description))
+                conn.commit()
+                return cur.rowcount > 0
+        finally:
+            self.pool.putconn(conn)
+    
+    def get_all_email_config(self) -> Dict[str, str]:
+        """Get all email configuration as dictionary"""
+        conn = self.pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT config_key, config_value FROM email_notification_config")
+                results = cur.fetchall()
+                return {row[0]: row[1] for row in results}
+        finally:
+            self.pool.putconn(conn)
+    
     def __del__(self):
         """Clean up connection pool"""
         if hasattr(self, 'pool') and self.pool:

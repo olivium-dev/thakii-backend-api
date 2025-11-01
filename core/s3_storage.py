@@ -5,9 +5,9 @@ from botocore.exceptions import ClientError
 
 class S3Storage:
     def __init__(self):
-        self.s3_client = boto3.client('s3')
-        self.bucket_name = os.getenv('S3_BUCKET_NAME', 'thakii-video-storage-1753883631')
         self.region = os.getenv('AWS_DEFAULT_REGION', 'us-east-2')
+        self.s3_client = boto3.client('s3', region_name=self.region)
+        self.bucket_name = os.getenv('S3_BUCKET_NAME', 'thakii-video-storage-1753883631')
     
     def upload_video(self, file_obj, video_id, filename):
         """Upload video file to S3"""
@@ -103,6 +103,55 @@ class S3Storage:
         except ClientError as e:
             print(f"Error generating PDF download URL: {e}")
             raise
+    
+    def download_file(self, s3_key):
+        """Download file content from S3 and return as bytes"""
+        try:
+            print(f"📥 Downloading file from S3: {s3_key}")
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=s3_key)
+            content = response['Body'].read()
+            print(f"✅ Downloaded {len(content)} bytes from S3")
+            return content
+        except ClientError as e:
+            print(f"❌ Error downloading file from S3: {e}")
+            return None
+    
+    def generate_presigned_download_url(self, s3_key, filename=None, expires_in_hours=72):
+        """
+        Generate a presigned URL for downloading a file from S3 without authentication
+        
+        Args:
+            s3_key: S3 object key (path to file)
+            filename: Optional custom filename for download
+            expires_in_hours: URL expiration time in hours (default: 72 hours)
+        
+        Returns:
+            Long, complex presigned URL that allows temporary unauthenticated access
+        """
+        try:
+            params = {
+                'Bucket': self.bucket_name,
+                'Key': s3_key
+            }
+            
+            # Add custom filename if provided
+            if filename:
+                params['ResponseContentDisposition'] = f'attachment; filename="{filename}"'
+            
+            # Generate presigned URL (expires in specified hours)
+            expires_in_seconds = expires_in_hours * 3600  # Convert hours to seconds
+            presigned_url = self.s3_client.generate_presigned_url(
+                'get_object',
+                Params=params,
+                ExpiresIn=expires_in_seconds
+            )
+            
+            print(f"✅ Generated presigned URL (expires in {expires_in_hours}h): {s3_key}")
+            return presigned_url
+            
+        except ClientError as e:
+            print(f"❌ Error generating presigned URL: {e}")
+            return None
     
     def cleanup_temp_files(self, *file_paths):
         """Clean up temporary files"""

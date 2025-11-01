@@ -32,3 +32,7 @@ WHERE table_name = 'video_tasks'
 AND column_name IN ('processed_by_worker', 'processed_by_worker_url', 'worker_attempts')
 ORDER BY column_name;
 
+
+
+
+

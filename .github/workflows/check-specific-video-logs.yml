@@ -1,0 +1,54 @@
+name: Check Specific Video Logs
+
+on:
+  workflow_dispatch:
+
+env:
+  SERVER_HOST: thakii-02.fds-1.com
+  SERVER_USER: ec2-user
+
+jobs:
+  check_logs:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Setup SSH
+      run: |
+        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared.deb
+        mkdir -p ~/.ssh
+        echo "${{ secrets.thakii_ssh_private_key }}" > ~/.ssh/thakii-key
+        chmod 600 ~/.ssh/thakii-key
+        
+        echo "Host thakii-server" >> ~/.ssh/config
+        echo "  HostName $SERVER_HOST" >> ~/.ssh/config
+        echo "  User $SERVER_USER" >> ~/.ssh/config
+        echo "  IdentityFile ~/.ssh/thakii-key" >> ~/.ssh/config
+        echo "  ProxyCommand cloudflared access ssh --hostname %h" >> ~/.ssh/config
+        echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+        chmod 600 ~/.ssh/config
+    
+    - name: Check Backend Logs for Specific Video
+      run: |
+        ssh thakii-server "
+          echo '=== CHECKING LOGS FOR VIDEO d52f6288-0bfb-468e-8eb9-a0d2142620ec ==='
+          
+          echo 'Searching for video in backend logs:'
+          grep -a 'd52f6288-0bfb-468e-8eb9-a0d2142620ec' /home/ec2-user/thakii-backend-api/systemd.log | tail -20
+          
+          echo ''
+          echo '=== CHECKING FOR TRIGGER_WORKER_PROCESSING CALLS ==='
+          grep -a 'TRIGGER_WORKER_PROCESSING' /home/ec2-user/thakii-backend-api/systemd.log | tail -10
+          
+          echo ''
+          echo '=== CHECKING FOR UPLOAD ENDPOINT CALLS ==='
+          grep -a 'UPLOAD ENDPOINT' /home/ec2-user/thakii-backend-api/systemd.log | tail -10
+          
+          echo ''
+          echo '=== CHECKING RECENT BACKEND ACTIVITY ==='
+          tail -50 /home/ec2-user/thakii-backend-api/systemd.log | grep -E 'Video uploaded|Task created|TRIGGER|Worker|trigger_with_fallback'
+          
+          echo ''
+          echo '=== CHECKING WORKER MANAGER STATUS ==='
+          tail -100 /home/ec2-user/thakii-backend-api/systemd.log | grep -E 'Worker Manager initialized|Primary Worker|Fallback Worker'
+        "

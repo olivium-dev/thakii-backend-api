@@ -2,6 +2,11 @@ name: Install PostgreSQL Client on thakii-3
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/install-postgresql-client-thakii3.yml'
 
 jobs:
   install_client:

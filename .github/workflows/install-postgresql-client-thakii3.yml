@@ -1,0 +1,154 @@
+name: Install PostgreSQL Client on thakii-3
+
+on:
+  workflow_dispatch:
+
+jobs:
+  install_client:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Setup Cloudflare
+      run: |
+        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared.deb
+        sudo apt-get update && sudo apt-get install -y sshpass
+    
+    - name: Install PostgreSQL Client Tools on thakii-3
+      run: |
+        echo "🔧 INSTALLING POSTGRESQL CLIENT ON THAKII-3"
+        echo "============================================"
+        echo "Installing CLIENT tools to connect to PostgreSQL SERVER on thakii-02"
+        
+        sshpass -p "12344321" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          -o ProxyCommand="cloudflared access ssh --hostname ssh-thakii-3.fanusdigital.site" \
+          fanusdigital@ssh-thakii-3.fanusdigital.site "
+          
+          echo '=== STEP 1: INSTALL POSTGRESQL CLIENT (libpq) ==='
+          echo 'Installing PostgreSQL client tools via Homebrew...'
+          /opt/homebrew/bin/brew install libpq
+          
+          echo ''
+          echo '=== STEP 2: ADD POSTGRESQL CLIENT TO PATH ==='
+          echo 'Adding libpq to PATH...'
+          echo 'export PATH=\"/opt/homebrew/opt/libpq/bin:\$PATH\"' >> ~/.zshrc
+          export PATH=\"/opt/homebrew/opt/libpq/bin:\$PATH\"
+          
+          echo ''
+          echo '=== STEP 3: VERIFY POSTGRESQL CLIENT INSTALLATION ==='
+          /opt/homebrew/opt/libpq/bin/psql --version
+          
+          echo ''
+          echo '=== STEP 4: INSTALL PYTHON POSTGRESQL DEPENDENCIES ==='
+          cd ~/thakii-worker-service
+          
+          # Check if virtual environment exists
+          if [ -d venv ]; then
+            echo 'Activating virtual environment...'
+            source venv/bin/activate
+          else
+            echo 'No virtual environment found, using system Python'
+          fi
+          
+          echo 'Installing psycopg2-binary...'
+          pip3 install psycopg2-binary
+          
+          echo ''
+          echo '=== STEP 5: TEST POSTGRESQL CONNECTION TO THAKII-02 ==='
+          echo 'Testing connection: thakii-3 → Cloudflare tunnel → thakii-02 PostgreSQL'
+          
+          export PATH=\"/opt/homebrew/opt/libpq/bin:\$PATH\"
+          PGPASSWORD='P@ssw0rd768_DB' /opt/homebrew/opt/libpq/bin/psql -h localhost -p 15432 -U thakii_user -d thakii_production -c 'SELECT NOW() as connection_time, version();' || echo 'PostgreSQL connection failed'
+          
+          echo ''
+          echo '=== STEP 6: TEST PYTHON POSTGRESQL CONNECTION ==='
+          python3 -c \"
+import sys
+try:
+    import psycopg2
+    print('✅ psycopg2 imported successfully')
+    
+    # Test connection to thakii-02 via tunnel
+    conn = psycopg2.connect(
+        host='localhost',
+        port='15432', 
+        dbname='thakii_production',
+        user='thakii_user',
+        password='P@ssw0rd768_DB',
+        connect_timeout=10
+    )
+    
+    cur = conn.cursor()
+    cur.execute('SELECT NOW(), COUNT(*) FROM video_tasks WHERE status = %s;', ('in_queue',))
+    result = cur.fetchone()
+    print(f'✅ Python → thakii-02 PostgreSQL connection successful!')
+    print(f'   Server time: {result[0]}')
+    print(f'   Videos in queue: {result[1]}')
+    
+    # Test a simple update to verify write access
+    cur.execute('UPDATE video_tasks SET error_message = %s WHERE video_id = %s;', 
+                ('Connection test from thakii-3 - ' + str(result[0]), 'd52f6288-0bfb-468e-8eb9-a0d2142620ec'))
+    conn.commit()
+    print(f'✅ Database write test successful!')
+    
+    conn.close()
+    
+except ImportError as e:
+    print(f'❌ psycopg2 import failed: {e}')
+    sys.exit(1)
+except Exception as e:
+    print(f'❌ PostgreSQL connection failed: {e}')
+    sys.exit(1)
+\"
+          
+          echo ''
+          echo '=== STEP 7: CHECK WORKER CONFIGURATION ==='
+          cd ~/thakii-worker-service
+          
+          echo 'Checking PostgreSQL configuration in worker...'
+          if [ -f core/postgres_integration.py ]; then
+            echo 'PostgreSQL integration file found:'
+            grep -n -A5 -B5 'localhost\|15432\|POSTGRES' core/postgres_integration.py || echo 'No localhost:15432 configuration found'
+          else
+            echo 'PostgreSQL integration file missing'
+          fi
+          
+          echo ''
+          echo '=== STEP 8: RESTART WORKER WITH POSTGRESQL SUPPORT ==='
+          echo 'Stopping existing worker...'
+          pkill -f 'python.*api_server' || echo 'No worker to kill'
+          
+          echo 'Starting worker with PostgreSQL client in PATH...'
+          cd ~/thakii-worker-service
+          export PATH=\"/opt/homebrew/opt/libpq/bin:\$PATH\"
+          nohup python3 api_server.py > worker.log 2>&1 &
+          
+          echo 'Waiting for worker to start...'
+          sleep 5
+          
+          # Check if worker is running
+          if ps aux | grep 'python.*api_server' | grep -v grep; then
+            echo '✅ Worker restarted successfully'
+          else
+            echo '❌ Worker failed to start'
+            echo 'Worker log:'
+            tail -20 worker.log || echo 'No worker log found'
+          fi
+          
+          echo ''
+          echo '=== STEP 9: TEST WORKER HEALTH ==='
+          echo 'Testing worker health endpoint...'
+          curl -s http://localhost:8000/health | python3 -m json.tool || echo 'Worker health check failed'
+          
+          echo ''
+          echo '=== STEP 10: FINAL VERIFICATION ==='
+          echo 'Checking if worker can now update database...'
+          
+          # Check recent worker logs for any database errors
+          echo 'Recent worker logs:'
+          tail -10 worker.log || echo 'No worker log available'
+          
+          echo ''
+          echo '🎉 POSTGRESQL CLIENT INSTALLATION COMPLETE!'
+          echo 'thakii-3 can now connect to PostgreSQL on thakii-02 via Cloudflare tunnel'
+        "

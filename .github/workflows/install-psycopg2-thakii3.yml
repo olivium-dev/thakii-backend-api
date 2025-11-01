@@ -1,0 +1,62 @@
+name: Install psycopg2 on thakii-3
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/install-psycopg2-thakii3.yml']
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install psycopg2-binary on thakii-3
+      run: |
+        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared.deb
+        sudo apt-get update && sudo apt-get install -y sshpass
+        
+        echo "🔧 INSTALLING psycopg2-binary ON THAKII-3"
+        
+        sshpass -p "12344321" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          -o ProxyCommand="cloudflared access ssh --hostname ssh-thakii-3.fanusdigital.site" \
+          fanusdigital@ssh-thakii-3.fanusdigital.site "
+          
+          echo 'Installing psycopg2-binary for Python PostgreSQL connection...'
+          cd ~/thakii-worker-service
+          pip3 install psycopg2-binary
+          
+          echo 'Testing Python PostgreSQL connection to thakii-02...'
+          python3 -c \"
+import psycopg2
+try:
+    conn = psycopg2.connect(
+        host='localhost',
+        port='15432', 
+        dbname='thakii_production',
+        user='thakii_user',
+        password='P@ssw0rd768_DB',
+        connect_timeout=10
+    )
+    cur = conn.cursor()
+    cur.execute('SELECT NOW(), COUNT(*) FROM video_tasks WHERE status = %s;', ('in_queue',))
+    result = cur.fetchone()
+    print(f'✅ Python → thakii-02 PostgreSQL connection successful!')
+    print(f'   Server time: {result[0]}')
+    print(f'   Videos in queue: {result[1]}')
+    conn.close()
+except Exception as e:
+    print(f'❌ Connection failed: {e}')
+    exit(1)
+\"
+          
+          echo 'Restarting worker with PostgreSQL support...'
+          pkill -f 'python.*api_server' || echo 'No worker to kill'
+          cd ~/thakii-worker-service
+          nohup python3 api_server.py > worker.log 2>&1 &
+          sleep 3
+          
+          ps aux | grep 'python.*api_server' | grep -v grep && echo '✅ Worker restarted' || echo '❌ Worker failed'
+          
+          echo 'Testing worker health...'
+          curl -s http://localhost:8000/health | python3 -m json.tool || echo 'Health check failed'
+        "

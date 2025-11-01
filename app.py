@@ -92,19 +92,15 @@ def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key
         print(f"✅ Database updated for video {video_id}")
         return True
     else:
-        print(f"❌ All workers failed for video {video_id}")
+        print(f"ℹ️ Push trigger failed for video {video_id} - task remains in queue")
         print(f"   Error: {result['error']}")
         print(f"   Worker used: {result.get('worker_used', 'N/A')}")
         print(f"   Status code: {result.get('status_code', 'N/A')}")
         
-        # Update task status to failed
-        error_message = result['error'] or 'Worker service unavailable'
+        # DO NOT mark as failed - leave in 'in_queue' for polling workers
+        # Task remains in queue with worker_attempts=0 to signal it's waiting for polling
         postgres_db.update_video_task(video_id, {
-            'status': 'failed',
-            'error_message': error_message,
-            'processed_by_worker': result['worker_used'],
-            'processed_by_worker_url': result.get('worker_url', ''),
-            'worker_attempts': 1
+            'worker_attempts': 0  # 0 means waiting for polling worker
         })
         
         # Notify via WebSocket
@@ -120,15 +116,48 @@ def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    """Health check endpoint"""
+    """Health check endpoint with worker status"""
+    # Check worker connectivity
+    worker_status = check_worker_connectivity()
+    
     return jsonify({
         "service": "Thakii Lecture2PDF Service",
         "status": "healthy",
         "database": "PostgreSQL",
         "storage": "S3",
         "websocket": "enabled",
+        "workers": worker_status,
         "timestamp": datetime.datetime.now().isoformat()
     })
+
+def check_worker_connectivity():
+    """Check connectivity to workers"""
+    import requests
+    
+    workers = {
+        "primary": {
+            "url": worker_manager.primary_worker_url if worker_manager else "https://thakii-3.fanusdigital.site/thakii-worker",
+            "status": "unknown"
+        },
+        "fallback": {
+            "url": worker_manager.fallback_worker_url if worker_manager else "https://thakii-02.fanusdigital.site/thakii-worker",
+            "status": "unknown"
+        }
+    }
+    
+    for worker_type, worker_info in workers.items():
+        try:
+            response = requests.get(f"{worker_info['url']}/health", timeout=5)
+            if response.status_code == 200:
+                worker_info["status"] = "healthy"
+                worker_info["details"] = response.json()
+            else:
+                worker_info["status"] = f"unhealthy ({response.status_code})"
+        except Exception as e:
+            worker_info["status"] = "unreachable"
+            worker_info["error"] = str(e)
+    
+    return workers
 
 # Mock authentication endpoints removed for production security
 # Use proper Firebase authentication only
@@ -354,18 +383,22 @@ def upload_video():
                 'filename': filename
             })
 
-        # Trigger worker processing with enhanced error handling
-        print(f"📢 UPLOAD ENDPOINT: About to call trigger_worker_processing for {video_id}")
-        trigger_success = trigger_worker_processing(
-            video_id=video_id,
-            user_id=current_user['uid'],
-            filename=filename,
-            s3_key=video_key
-        )
-        print(f"📢 UPLOAD ENDPOINT: trigger_worker_processing returned {trigger_success}")
-        
-        if not trigger_success:
-            print(f"⚠️⚠️⚠️ Worker trigger failed for {video_id}, but upload successful")
+        # Try to trigger worker processing (optional - workers can also poll)
+        # If trigger fails, task stays in 'in_queue' for polling workers
+        print(f"📢 UPLOAD ENDPOINT: Attempting to trigger worker for {video_id}")
+        try:
+            trigger_success = trigger_worker_processing(
+                video_id=video_id,
+                user_id=current_user['uid'],
+                filename=filename,
+                s3_key=video_key
+            )
+            if trigger_success:
+                print(f"✅ Worker triggered successfully for {video_id}")
+            else:
+                print(f"ℹ️ Worker trigger failed - task remains in queue for polling workers")
+        except Exception as e:
+            print(f"⚠️ Worker trigger exception: {e} - task remains in queue for polling")
 
         return jsonify({
             "video_id": video_id, 

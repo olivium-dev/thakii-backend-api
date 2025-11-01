@@ -1,0 +1,93 @@
+name: Check thakii-3 PostgreSQL Tunnel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check_tunnel:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Setup Cloudflare and SSH
+      run: |
+        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared.deb
+        
+        # Setup SSH for Mac server
+        mkdir -p ~/.ssh
+        echo "${{ secrets.MAC_SSH_PASSWORD }}" > /tmp/mac_password
+        sudo apt-get update && sudo apt-get install -y sshpass
+    
+    - name: Check PostgreSQL Tunnel Status on thakii-3
+      env:
+        MAC_PASSWORD: ${{ secrets.MAC_SSH_PASSWORD }}
+      run: |
+        echo "🔍 CHECKING POSTGRESQL TUNNEL ON THAKII-3 (MAC)"
+        echo "==============================================="
+        
+        # Connect to Mac server via Cloudflare SSH tunnel
+        sshpass -p "$MAC_PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          -o ProxyCommand="cloudflared access ssh --hostname ssh-thakii-3.fanusdigital.site" \
+          fanusdigital@ssh-thakii-3.fanusdigital.site "
+          
+          echo '=== CHECKING CLOUDFLARE TUNNEL PROCESS ==='
+          ps aux | grep 'cloudflared.*15432' | grep -v grep || echo 'No cloudflared tunnel process found'
+          
+          echo ''
+          echo '=== CHECKING TUNNEL LOG ==='
+          if [ -f /tmp/postgres_tunnel.log ]; then
+            echo 'Last 20 lines of tunnel log:'
+            tail -20 /tmp/postgres_tunnel.log
+          else
+            echo 'Tunnel log file not found'
+          fi
+          
+          echo ''
+          echo '=== TESTING POSTGRESQL CONNECTION VIA TUNNEL ==='
+          echo 'Testing connection to localhost:15432...'
+          
+          # Test if port is listening
+          nc -z localhost 15432 && echo '✅ Port 15432 is listening' || echo '❌ Port 15432 is NOT listening'
+          
+          echo ''
+          echo '=== TESTING POSTGRESQL AUTHENTICATION ==='
+          # Test actual PostgreSQL connection
+          PGPASSWORD='P@ssw0rd768_DB' psql -h localhost -p 15432 -U thakii_user -d thakii_production -c 'SELECT 1 as test;' 2>&1 || echo 'PostgreSQL connection failed'
+          
+          echo ''
+          echo '=== TESTING DATABASE WRITE ==='
+          # Test if we can write to database
+          PGPASSWORD='P@ssw0rd768_DB' psql -h localhost -p 15432 -U thakii_user -d thakii_production -c \"
+            SELECT COUNT(*) as total_videos FROM video_tasks;
+          \" 2>&1 || echo 'Database read failed'
+          
+          echo ''
+          echo '=== CHECKING WORKER SERVICE STATUS ==='
+          # Check if worker is running
+          ps aux | grep 'python.*api_server' | grep -v grep || echo 'Worker not running'
+          
+          echo ''
+          echo '=== CHECKING LAUNCHD SERVICE FOR TUNNEL ==='
+          launchctl list | grep 'com.thakii.postgres.tunnel' || echo 'LaunchDaemon not found'
+          
+          echo ''
+          echo '=== CHECKING IF TUNNEL MONITOR IS RUNNING ==='
+          ps aux | grep 'monitor_postgres_tunnel' | grep -v grep || echo 'Tunnel monitor not running'
+          
+          echo ''
+          echo '=== TESTING IF WE CAN UPDATE A VIDEO STATUS ==='
+          # Try to update a test video status
+          PGPASSWORD='P@ssw0rd768_DB' psql -h localhost -p 15432 -U thakii_user -d thakii_production -c \"
+            UPDATE video_tasks 
+            SET error_message = 'PostgreSQL tunnel test from thakii-3 - $(date)'
+            WHERE video_id = 'd52f6288-0bfb-468e-8eb9-a0d2142620ec';
+          \" 2>&1 && echo '✅ Database write successful!' || echo '❌ Database write failed!'
+          
+          echo ''
+          echo '=== CHECKING UPDATED VIDEO ==='
+          PGPASSWORD='P@ssw0rd768_DB' psql -h localhost -p 15432 -U thakii_user -d thakii_production -c \"
+            SELECT video_id, status, error_message, updated_at 
+            FROM video_tasks 
+            WHERE video_id = 'd52f6288-0bfb-468e-8eb9-a0d2142620ec';
+          \" 2>&1 || echo 'Database query failed'
+        "

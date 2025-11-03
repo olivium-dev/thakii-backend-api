@@ -1400,6 +1400,12 @@ def worker_update_task():
         pdf_url = data.get('pdf_url')
         error_message = data.get('error_message')
         
+        # Log progress updates for verification
+        if progress is not None:
+            print(f"📊 Worker {worker_id} updating task {video_id}: {status} (progress: {progress}%)")
+        else:
+            print(f"📊 Worker {worker_id} updating task {video_id}: {status} (no progress provided)")
+        
         success = worker_task_manager.update_task(
             video_id=video_id,
             worker_id=worker_id,

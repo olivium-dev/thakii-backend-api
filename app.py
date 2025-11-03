@@ -17,7 +17,6 @@ from core.admin_manager import admin_manager
 from core.websocket_manager import init_websocket, get_websocket_manager
 from core.worker_manager import worker_manager
 from core.email_service import email_service
-from core.batch_import_service import BatchImportService
 
 load_dotenv()
 
@@ -48,19 +47,11 @@ s3_storage = S3Storage()
 # Initialize WebSocket
 websocket_manager = init_websocket(app)
 
-# Initialize Batch Import Service
-batch_import_service = BatchImportService()
-
 def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key: str) -> bool:
     """
     Trigger worker processing via HTTP with primary/fallback support
     Uses worker_manager for intelligent routing and automatic failover
     """
-    print(f"🚀🚀🚀 TRIGGER_WORKER_PROCESSING CALLED for video {video_id} 🚀🚀🚀")
-    print(f"   User ID: {user_id}")
-    print(f"   Filename: {filename}")
-    print(f"   S3 Key: {s3_key}")
-    
     payload = {
         "video_id": video_id,
         "user_id": user_id,
@@ -68,19 +59,12 @@ def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key
         "s3_key": s3_key
     }
     
-    print(f"📦 Payload prepared: {payload}")
-    print(f"🔧 Calling worker_manager.trigger_with_fallback()...")
-    
     # Trigger worker with automatic fallback
     result = worker_manager.trigger_with_fallback(payload)
-    
-    print(f"📊 Result from trigger_with_fallback: {result}")
     
     if result['success']:
         print(f"✅ Worker triggered successfully: {video_id}")
         print(f"   Worker used: {result['worker_used']}")
-        print(f"   Worker URL: {result.get('worker_url', 'N/A')}")
-        print(f"   Status code: {result.get('status_code', 'N/A')}")
         
         # Update database with worker information
         postgres_db.update_video_task(video_id, {
@@ -89,18 +73,19 @@ def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key
             'worker_attempts': 1
         })
         
-        print(f"✅ Database updated for video {video_id}")
         return True
     else:
-        print(f"ℹ️ Push trigger failed for video {video_id} - task remains in queue")
+        print(f"❌ All workers failed for video {video_id}")
         print(f"   Error: {result['error']}")
-        print(f"   Worker used: {result.get('worker_used', 'N/A')}")
-        print(f"   Status code: {result.get('status_code', 'N/A')}")
         
-        # DO NOT mark as failed - leave in 'in_queue' for polling workers
-        # Task remains in queue with worker_attempts=0 to signal it's waiting for polling
+        # Update task status to failed
+        error_message = result['error'] or 'Worker service unavailable'
         postgres_db.update_video_task(video_id, {
-            'worker_attempts': 0  # 0 means waiting for polling worker
+            'status': 'failed',
+            'error_message': error_message,
+            'processed_by_worker': result['worker_used'],
+            'processed_by_worker_url': result.get('worker_url', ''),
+            'worker_attempts': 1
         })
         
         # Notify via WebSocket
@@ -111,53 +96,19 @@ def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key
                 'error_message': error_message
             })
         
-        print(f"❌ Database marked as failed for video {video_id}")
         return False
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    """Health check endpoint with worker status"""
-    # Check worker connectivity
-    worker_status = check_worker_connectivity()
-    
+    """Health check endpoint"""
     return jsonify({
         "service": "Thakii Lecture2PDF Service",
         "status": "healthy",
         "database": "PostgreSQL",
         "storage": "S3",
         "websocket": "enabled",
-        "workers": worker_status,
         "timestamp": datetime.datetime.now().isoformat()
     })
-
-def check_worker_connectivity():
-    """Check connectivity to workers"""
-    import requests
-    
-    workers = {
-        "primary": {
-            "url": worker_manager.primary_worker_url if worker_manager else "https://thakii-3.fanusdigital.site/thakii-worker",
-            "status": "unknown"
-        },
-        "fallback": {
-            "url": worker_manager.fallback_worker_url if worker_manager else "https://thakii-02.fanusdigital.site/thakii-worker",
-            "status": "unknown"
-        }
-    }
-    
-    for worker_type, worker_info in workers.items():
-        try:
-            response = requests.get(f"{worker_info['url']}/health", timeout=5)
-            if response.status_code == 200:
-                worker_info["status"] = "healthy"
-                worker_info["details"] = response.json()
-            else:
-                worker_info["status"] = f"unhealthy ({response.status_code})"
-        except Exception as e:
-            worker_info["status"] = "unreachable"
-            worker_info["error"] = str(e)
-    
-    return workers
 
 # Mock authentication endpoints removed for production security
 # Use proper Firebase authentication only
@@ -383,28 +334,37 @@ def upload_video():
                 'filename': filename
             })
 
-        # Try to trigger worker processing (optional - workers can also poll)
-        # If trigger fails, task stays in 'in_queue' for polling workers
-        print(f"📢 UPLOAD ENDPOINT: Attempting to trigger worker for {video_id}")
-        try:
+        # Check if Worker API is enabled
+        enable_worker_api = os.getenv('ENABLE_WORKER_API', 'false').lower() == 'true'
+        
+        if enable_worker_api:
+            # Worker API mode: Workers will poll for tasks via API
+            print(f"🔄 Worker API enabled - task queued for API pickup: {video_id}")
+            return jsonify({
+                "video_id": video_id, 
+                "message": "Video uploaded to S3 and queued for processing",
+                "s3_key": video_key,
+                "mode": "worker_api"
+            })
+        else:
+            # Legacy HTTP trigger mode
+            print(f"🔄 Legacy mode - triggering worker via HTTP: {video_id}")
             trigger_success = trigger_worker_processing(
                 video_id=video_id,
                 user_id=current_user['uid'],
                 filename=filename,
                 s3_key=video_key
             )
-            if trigger_success:
-                print(f"✅ Worker triggered successfully for {video_id}")
-            else:
-                print(f"ℹ️ Worker trigger failed - task remains in queue for polling workers")
-        except Exception as e:
-            print(f"⚠️ Worker trigger exception: {e} - task remains in queue for polling")
+            
+            if not trigger_success:
+                print(f"⚠️ Worker trigger failed for {video_id}, but upload successful")
 
-        return jsonify({
-            "video_id": video_id, 
-            "message": "Video uploaded to S3 and queued for processing",
-            "s3_key": video_key
-        })
+            return jsonify({
+                "video_id": video_id, 
+                "message": "Video uploaded to S3 and queued for processing",
+                "s3_key": video_key,
+                "mode": "http_trigger"
+            })
     
     except Exception as e:
         print(f"Error uploading video: {str(e)}")
@@ -461,152 +421,45 @@ def test_upload_video():
                 'filename': filename
             })
 
-        # Trigger worker processing with enhanced error handling
-        print(f"🔄 TEST: Triggering worker processing for {video_id}")
-        trigger_success = trigger_worker_processing(
-            video_id=video_id,
-            user_id=test_user['uid'],
-            filename=filename,
-            s3_key=video_key
-        )
+        # Check if Worker API is enabled
+        enable_worker_api = os.getenv('ENABLE_WORKER_API', 'false').lower() == 'true'
         
-        if not trigger_success:
-            print(f"⚠️ TEST: Worker trigger failed for {video_id}, but upload successful")
+        if enable_worker_api:
+            # Worker API mode: Workers will poll for tasks via API
+            print(f"🔄 TEST: Worker API enabled - task queued for API pickup: {video_id}")
+            return jsonify({
+                "video_id": video_id, 
+                "message": "TEST: Video uploaded to S3 and queued for processing",
+                "s3_key": video_key,
+                "test_mode": True,
+                "user": test_user,
+                "mode": "worker_api"
+            })
+        else:
+            # Legacy HTTP trigger mode
+            print(f"🔄 TEST: Triggering worker processing for {video_id}")
+            trigger_success = trigger_worker_processing(
+                video_id=video_id,
+                user_id=test_user['uid'],
+                filename=filename,
+                s3_key=video_key
+            )
+            
+            if not trigger_success:
+                print(f"⚠️ TEST: Worker trigger failed for {video_id}, but upload successful")
 
-        return jsonify({
-            "video_id": video_id, 
-            "message": "TEST: Video uploaded to S3 and queued for processing",
-            "s3_key": video_key,
-            "test_mode": True,
-            "user": test_user
-        })
+            return jsonify({
+                "video_id": video_id, 
+                "message": "TEST: Video uploaded to S3 and queued for processing",
+                "s3_key": video_key,
+                "test_mode": True,
+                "user": test_user,
+                "mode": "http_trigger"
+            })
     
     except Exception as e:
         print(f"❌ TEST: Error uploading video: {str(e)}")
         return jsonify({"error": f"Failed to upload video: {str(e)}"}), 500
-
-
-# ==================== BATCH IMPORT ENDPOINTS ====================
-
-@app.route("/batch-import/list-videos", methods=["POST"])
-@require_auth
-def list_batch_import_videos():
-    """
-    List videos from a wolkesicher.de share URL
-    
-    Request body: {"share_url": "https://..."}
-    Returns: {"videos": [...], "total_count": N, "total_size": bytes}
-    """
-    try:
-        data = request.get_json()
-        if not data or 'share_url' not in data:
-            return jsonify({"error": "share_url is required"}), 400
-        
-        share_url = data['share_url']
-        print(f"📋 Listing videos from: {share_url}")
-        
-        # List videos using batch import service
-        result = batch_import_service.list_videos_from_share(share_url)
-        
-        if 'error' in result:
-            return jsonify(result), 400
-        
-        return jsonify(result), 200
-        
-    except Exception as e:
-        print(f"❌ Error listing batch import videos: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": f"Failed to list videos: {str(e)}"}), 500
-
-
-@app.route("/batch-import/import-videos", methods=["POST"])
-@require_auth
-def batch_import_videos():
-    """
-    Import selected videos from wolkesicher.de
-    
-    Request body: {
-        "share_url": "...", 
-        "selected_videos": [{"name": "...", "download_url": "...", "size": N}, ...]
-    }
-    Returns: {"batch_id": "...", "imported_videos": [...]}
-    """
-    try:
-        # Get current user
-        current_user = get_current_user()
-        if not current_user:
-            return jsonify({"error": "Authentication required"}), 401
-        
-        data = request.get_json()
-        if not data or 'share_url' not in data or 'selected_videos' not in data:
-            return jsonify({"error": "share_url and selected_videos are required"}), 400
-        
-        share_url = data['share_url']
-        selected_videos = data['selected_videos']
-        
-        if not selected_videos or len(selected_videos) == 0:
-            return jsonify({"error": "No videos selected"}), 400
-        
-        print(f"📦 Starting batch import of {len(selected_videos)} videos")
-        print(f"   User: {current_user['email']}")
-        print(f"   Share: {share_url}")
-        
-        batch_id = str(uuid.uuid4())
-        imported_videos = []
-        failed_videos = []
-        
-        # Import each video
-        for i, video_info in enumerate(selected_videos, 1):
-            print(f"\n[{i}/{len(selected_videos)}] Processing: {video_info['name']}")
-            
-            try:
-                result = batch_import_service.download_and_import_video(
-                    share_url=share_url,
-                    video_info=video_info,
-                    user_id=current_user['uid'],
-                    user_email=current_user['email'],
-                    s3_storage=s3_storage,
-                    postgres_db=postgres_db,
-                    websocket_manager=websocket_manager,
-                    trigger_worker_fn=trigger_worker_processing
-                )
-                
-                if result and result['status'] == 'success':
-                    imported_videos.append(result)
-                else:
-                    failed_videos.append(result if result else {
-                        'video_name': video_info['name'],
-                        'status': 'failed',
-                        'error': 'Unknown error'
-                    })
-                    
-            except Exception as e:
-                print(f"   ❌ Failed to import {video_info['name']}: {e}")
-                failed_videos.append({
-                    'video_name': video_info['name'],
-                    'status': 'failed',
-                    'error': str(e)
-                })
-        
-        print(f"\n✅ Batch import completed:")
-        print(f"   Success: {len(imported_videos)}")
-        print(f"   Failed: {len(failed_videos)}")
-        
-        return jsonify({
-            "batch_id": batch_id,
-            "total_count": len(selected_videos),
-            "success_count": len(imported_videos),
-            "failed_count": len(failed_videos),
-            "imported_videos": imported_videos,
-            "failed_videos": failed_videos
-        }), 200
-        
-    except Exception as e:
-        print(f"❌ Error in batch import: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": f"Failed to import videos: {str(e)}"}), 500
 
 
 @app.route("/upload-chunk", methods=["POST"])
@@ -720,16 +573,24 @@ def assemble_file():
             "in_queue"
         )
         
-        # Trigger worker processing with enhanced error handling
-        trigger_success = trigger_worker_processing(
-            video_id=video_id,
-            user_id=current_user['uid'],
-            filename=original_filename,
-            s3_key=video_key
-        )
+        # Check if Worker API is enabled
+        enable_worker_api = os.getenv('ENABLE_WORKER_API', 'false').lower() == 'true'
         
-        if not trigger_success:
-            print(f"⚠️ Worker trigger failed for assembled file {video_id}")
+        if enable_worker_api:
+            # Worker API mode: Workers will poll for tasks via API
+            print(f"🔄 Worker API enabled - assembled file queued for API pickup: {video_id}")
+        else:
+            # Legacy HTTP trigger mode
+            print(f"🔄 Legacy mode - triggering worker for assembled file: {video_id}")
+            trigger_success = trigger_worker_processing(
+                video_id=video_id,
+                user_id=current_user['uid'],
+                filename=original_filename,
+                s3_key=video_key
+            )
+            
+            if not trigger_success:
+                print(f"⚠️ Worker trigger failed for assembled file {video_id}")
         
         # Cleanup chunks and temporary file
         import shutil
@@ -1236,23 +1097,6 @@ def internal_task_update():
         if not task:
             return jsonify({"error": "Task not found"}), 404
         
-        # Prepare update data
-        update_data = {'status': status}
-        
-        # Add pdf_url if provided
-        if 'pdf_url' in data and data['pdf_url']:
-            update_data['pdf_url'] = data['pdf_url']
-            
-        # Add error_message if provided
-        if 'error_message' in data and data['error_message']:
-            update_data['error_message'] = data['error_message']
-        
-        # Update task in database
-        postgres_db.update_video_task(video_id, update_data)
-        
-        # Get updated task data for notifications
-        task = postgres_db.get_video_task(video_id)
-        
         # Send WebSocket notification
         if websocket_manager:
             websocket_manager.notify_task_update(user_id, task)
@@ -1303,95 +1147,6 @@ def internal_task_update():
     except Exception as e:
         print(f"Error in internal task update: {e}")
         return jsonify({"error": str(e)}), 500
-
-@app.route("/internal/get-pending-tasks", methods=["GET"])
-def internal_get_pending_tasks():
-    """
-    Internal endpoint for workers to get pending tasks
-    This allows remote workers to access the task queue without direct database access
-    """
-    try:
-        limit = request.args.get('limit', 5, type=int)
-        
-        # Get pending tasks from database (in_queue and uploaded status)
-        in_queue_tasks = postgres_db.get_tasks_by_status('in_queue')
-        uploaded_tasks = postgres_db.get_tasks_by_status('uploaded')
-        
-        # Combine and limit results
-        pending_tasks = (in_queue_tasks + uploaded_tasks)[:limit]
-        
-        return jsonify({
-            "success": True,
-            "tasks": pending_tasks,
-            "count": len(pending_tasks)
-        })
-        
-    except Exception as e:
-        return jsonify({"error": f"Failed to get pending tasks: {str(e)}"}), 500
-
-@app.route("/internal/get-task/<video_id>", methods=["GET"])
-def internal_get_task(video_id):
-    """
-    Internal endpoint for workers to get specific task details
-    """
-    try:
-        task = postgres_db.get_video_task(video_id)
-        
-        if not task:
-            return jsonify({"error": "Task not found"}), 404
-        
-        return jsonify({
-            "success": True,
-            "task": task
-        })
-        
-    except Exception as e:
-        return jsonify({"error": f"Failed to get task: {str(e)}"}), 500
-
-@app.route("/internal/download-pdf/<video_id>", methods=["GET"])
-def internal_download_pdf(video_id):
-    """
-    Internal endpoint to download PDF from S3
-    Used by email service to get PDF content for attachments
-    """
-    try:
-        # Get task to find PDF URL
-        task = postgres_db.get_video_task(video_id)
-        
-        if not task:
-            return jsonify({"error": "Task not found"}), 404
-        
-        pdf_url = task.get('pdf_url')
-        if not pdf_url:
-            return jsonify({"error": "No PDF URL found"}), 404
-        
-        # Extract S3 key from URL
-        if 'amazonaws.com/' in pdf_url:
-            s3_key = pdf_url.split('amazonaws.com/')[-1]
-        else:
-            return jsonify({"error": "Invalid PDF URL format"}), 400
-        
-        # Download PDF from S3
-        s3_storage = S3Storage()
-        pdf_content = s3_storage.download_file(s3_key)
-        
-        if not pdf_content:
-            return jsonify({"error": "Failed to download PDF from S3"}), 500
-        
-        # Return PDF as binary response
-        from flask import send_file
-        from io import BytesIO
-        
-        return send_file(
-            BytesIO(pdf_content),
-            mimetype='application/pdf',
-            as_attachment=False,
-            download_name=f"{video_id}.pdf"
-        )
-        
-    except Exception as e:
-        print(f"Error downloading PDF: {e}")
-        return jsonify({"error": f"Failed to download PDF: {str(e)}"}), 500
 
 @app.route("/admin/email/test", methods=["POST"])
 @require_admin

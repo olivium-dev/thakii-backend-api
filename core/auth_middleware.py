@@ -58,18 +58,48 @@ def _verify_with_jwks(token: str):
     key = None
     for k in jwks.get('keys', []):
         if k.get('kid') == kid:
-            key = RSAAlgorithm.from_jwk(json.dumps(k))
-            break
+            try:
+                key = RSAAlgorithm.from_jwk(json.dumps(k))
+                break
+            except Exception as e:
+                print(f"⚠️ Failed to parse JWK for kid {kid}: {e}")
+                print(f"JWK data: {json.dumps(k, indent=2)}")
+                # Try alternative parsing method
+                try:
+                    # Remove any problematic fields and retry
+                    clean_k = {key: val for key, val in k.items() if key in ['kty', 'kid', 'use', 'alg', 'n', 'e']}
+                    key = RSAAlgorithm.from_jwk(json.dumps(clean_k))
+                    print(f"✅ Successfully parsed JWK with cleaned data for kid {kid}")
+                    break
+                except Exception as e2:
+                    print(f"❌ Alternative parsing also failed for kid {kid}: {e2}")
+                    continue
+    
     if not key:
         # Refresh JWKS once if key not found
+        print(f"🔄 Refreshing JWKS cache, key not found for kid: {kid}")
         _jwks_cache['keys'] = None
         jwks = _get_jwks_cached()
         for k in jwks.get('keys', []):
             if k.get('kid') == kid:
-                key = RSAAlgorithm.from_jwk(json.dumps(k))
-                break
+                try:
+                    key = RSAAlgorithm.from_jwk(json.dumps(k))
+                    break
+                except Exception as e:
+                    print(f"⚠️ Failed to parse refreshed JWK for kid {kid}: {e}")
+                    try:
+                        # Try alternative parsing method on refresh
+                        clean_k = {key: val for key, val in k.items() if key in ['kty', 'kid', 'use', 'alg', 'n', 'e']}
+                        key = RSAAlgorithm.from_jwk(json.dumps(clean_k))
+                        print(f"✅ Successfully parsed refreshed JWK with cleaned data for kid {kid}")
+                        break
+                    except Exception as e2:
+                        print(f"❌ Alternative parsing of refreshed JWK also failed for kid {kid}: {e2}")
+                        continue
+    
     if not key:
-        raise ValueError('Unable to find matching JWKS key')
+        available_kids = [k.get('kid') for k in jwks.get('keys', [])]
+        raise ValueError(f'Unable to find or parse matching JWKS key for kid: {kid}. Available kids: {available_kids}')
 
     issuer = f"https://securetoken.google.com/{project_id}"
     decoded = jwt.decode(

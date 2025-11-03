@@ -56,13 +56,20 @@ websocket_manager = init_websocket(app)
 # Initialize Worker Task Manager
 worker_task_manager = init_worker_task_manager(postgres_db)
 
-# Initialize Batch Import Service
-batch_import_service = BatchImportService(
-    postgres_db=postgres_db,
-    s3_storage=s3_storage,
-    websocket_manager=websocket_manager,
-    trigger_worker_fn=trigger_worker_processing
-)
+# Initialize Batch Import Service (lazy initialization to avoid startup issues)
+batch_import_service = None
+
+def get_batch_import_service():
+    """Get or create batch import service instance"""
+    global batch_import_service
+    if batch_import_service is None:
+        batch_import_service = BatchImportService(
+            postgres_db=postgres_db,
+            s3_storage=s3_storage,
+            websocket_manager=websocket_manager,
+            trigger_worker_fn=trigger_worker_processing
+        )
+    return batch_import_service
 
 def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key: str) -> bool:
     """
@@ -1542,7 +1549,7 @@ def submit_batch_import():
         print(f"   Share URL: {share_url}")
         
         # Create batch job (non-blocking)
-        job_result = batch_import_service.create_batch_job(user_id, user_email, share_url)
+        job_result = get_batch_import_service().create_batch_job(user_id, user_email, share_url)
         
         if not job_result:
             return jsonify({
@@ -1598,7 +1605,7 @@ def get_batch_import_status(job_id):
         user_id = current_user.get('uid')
         
         # Get job status
-        job_status = batch_import_service.get_batch_job_status(job_id, user_id)
+        job_status = get_batch_import_service().get_batch_job_status(job_id, user_id)
         
         if not job_status:
             return jsonify({"error": "Batch job not found"}), 404
@@ -1648,7 +1655,7 @@ def list_batch_import_jobs():
             limit = 20
         
         # Get user's batch jobs
-        jobs = batch_import_service.list_user_batch_jobs(user_id, limit)
+        jobs = get_batch_import_service().list_user_batch_jobs(user_id, limit)
         
         return jsonify({"jobs": jobs}), 200
         
@@ -1661,8 +1668,19 @@ def list_batch_import_jobs():
 def start_batch_import_service():
     """Start the batch import background service"""
     print("🚀 Starting batch import background service...")
+    
+    def run_batch_service():
+        """Wrapper function to run batch service with lazy initialization"""
+        try:
+            service = get_batch_import_service()
+            service.run_service()
+        except Exception as e:
+            print(f"❌ Batch import service error: {e}")
+            import traceback
+            traceback.print_exc()
+    
     batch_thread = threading.Thread(
-        target=batch_import_service.run_service, 
+        target=run_batch_service, 
         daemon=True,
         name="BatchImportService"
     )

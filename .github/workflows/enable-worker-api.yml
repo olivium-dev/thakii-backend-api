@@ -1,0 +1,66 @@
+name: Enable Worker API
+
+on:
+  workflow_dispatch:
+
+jobs:
+  enable-backend:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup SSH via Cloudflare
+      uses: ./.github/actions/cloudflare-ssh
+      with:
+        ssh-private-key: ${{ secrets.THAKII_SSH_PRIVATE_KEY }}
+        server-hostname: thakii-02.fds-1.com
+        server-user: ec2-user
+        host-alias: 'thakii-backend'
+    
+    - name: Enable Worker API on Backend
+      run: |
+        ssh thakii-backend "
+          set -e
+          cd /home/ec2-user/thakii-backend-api
+          
+          echo '🔧 Enabling Worker API on backend...'
+          
+          # Backup current .env
+          cp .env .env.backup-\$(date +%Y%m%d%H%M%S)
+          
+          # Enable Worker API
+          if grep -q 'ENABLE_WORKER_API' .env; then
+            sed -i 's/ENABLE_WORKER_API=.*/ENABLE_WORKER_API=true/' .env
+          else
+            echo 'ENABLE_WORKER_API=true' >> .env
+          fi
+          
+          # Verify the change
+          echo '✅ Backend .env updated:'
+          grep ENABLE_WORKER_API .env
+          
+          # Restart backend service
+          sudo systemctl restart thakii-backend.service
+          sleep 5
+          
+          # Check service status
+          sudo systemctl is-active thakii-backend.service
+          
+          echo '✅ Backend Worker API enabled and service restarted'
+        "
+    
+    - name: Verify Backend Health
+      run: |
+        sleep 5
+        echo "🔍 Checking backend health..."
+        HEALTH=$(curl -s https://thakii-02.fanusdigital.site/thakii-be/health)
+        echo "$HEALTH" | jq '{status, redis_queue: .redis_queue.enabled}'
+        
+        # Check if Worker API is enabled
+        ENABLED=$(echo "$HEALTH" | jq -r '.redis_queue.enabled // false')
+        if [ "$ENABLED" != "true" ]; then
+          echo "❌ Worker API not enabled!"
+          exit 1
+        fi
+        echo "✅ Worker API enabled on backend!"

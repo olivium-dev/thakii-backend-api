@@ -1344,6 +1344,105 @@ if __name__ == "__main__":
     # Ensure super admins exist in database on startup
     admin_manager.ensure_super_admins_exist()
     
+# ============================================================================
+# WORKER API ENDPOINTS (Internal)
+# ============================================================================
+
+@app.route("/internal/worker/pickup-task", methods=["POST"])
+def worker_pickup_task():
+    """Worker API endpoint to atomically pick up a single task"""
+    enable_worker_api = os.getenv('ENABLE_WORKER_API', 'false').lower() == 'true'
+    if not enable_worker_api:
+        return jsonify({"error": "Worker API is not enabled"}), 403
+    
+    try:
+        data = request.get_json() or {}
+        worker_id = data.get('worker_id')
+        worker_capacity = data.get('worker_capacity', 4)
+        
+        if not worker_id:
+            return jsonify({"error": "worker_id is required"}), 400
+        
+        task = worker_task_manager.pickup_task(worker_id, worker_capacity)
+        if task:
+            return jsonify({"success": True, "task": task}), 200
+        else:
+            return '', 204
+    except Exception as e:
+        print(f"❌ Error in worker_pickup_task: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/internal/worker/update-task", methods=["POST"])
+def worker_update_task():
+    """Worker API endpoint to update task status"""
+    enable_worker_api = os.getenv('ENABLE_WORKER_API', 'false').lower() == 'true'
+    if not enable_worker_api:
+        return jsonify({"error": "Worker API is not enabled"}), 403
+    
+    try:
+        data = request.get_json() or {}
+        video_id = data.get('video_id')
+        worker_id = data.get('worker_id')
+        status = data.get('status')
+        
+        if not all([video_id, worker_id, status]):
+            return jsonify({"error": "video_id, worker_id, and status are required"}), 400
+        
+        updates = {'status': status, 'updated_at': datetime.datetime.now()}
+        if 'progress' in data:
+            updates['progress'] = data['progress']
+        if 'pdf_url' in data:
+            updates['pdf_url'] = data['pdf_url']
+        if 'error_message' in data:
+            updates['error_message'] = data['error_message']
+        
+        success = worker_task_manager.update_task(video_id, worker_id, updates)
+        if success:
+            return jsonify({"success": True}), 200
+        else:
+            return jsonify({"error": "Failed to update task"}), 500
+    except Exception as e:
+        print(f"❌ Error in worker_update_task: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/internal/worker/heartbeat", methods=["POST"])
+def worker_heartbeat():
+    """Worker API endpoint to send heartbeat"""
+    enable_worker_api = os.getenv('ENABLE_WORKER_API', 'false').lower() == 'true'
+    if not enable_worker_api:
+        return jsonify({"error": "Worker API is not enabled"}), 403
+    
+    try:
+        data = request.get_json() or {}
+        worker_id = data.get('worker_id')
+        active_task_ids = data.get('active_task_ids', [])
+        
+        if not worker_id:
+            return jsonify({"error": "worker_id is required"}), 400
+        
+        worker_task_manager.worker_heartbeat(worker_id, active_task_ids)
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        print(f"❌ Error in worker_heartbeat: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/internal/worker/recover-stale-tasks", methods=["POST"])
+def recover_stale_tasks():
+    """Worker API endpoint to recover stale tasks"""
+    enable_worker_api = os.getenv('ENABLE_WORKER_API', 'false').lower() == 'true'
+    if not enable_worker_api:
+        return jsonify({"error": "Worker API is not enabled"}), 403
+    
+    try:
+        count = worker_task_manager.recover_stale_tasks()
+        return jsonify({"success": True, "recovered_count": count}), 200
+    except Exception as e:
+        print(f"❌ Error in recover_stale_tasks: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# ============================================================================
+
+if __name__ == "__main__":
     # Configure Flask for large file uploads
     app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024 * 1024  # 5GB max file size
     app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0  # Disable caching for large files

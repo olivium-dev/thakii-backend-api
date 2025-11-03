@@ -17,6 +17,7 @@ from core.admin_manager import admin_manager
 from core.websocket_manager import init_websocket, get_websocket_manager
 from core.worker_manager import worker_manager
 from core.email_service import email_service
+from core.worker_task_manager import init_worker_task_manager, get_worker_task_manager
 
 load_dotenv()
 
@@ -46,6 +47,9 @@ s3_storage = S3Storage()
 
 # Initialize WebSocket
 websocket_manager = init_websocket(app)
+
+# Initialize Worker Task Manager
+worker_task_manager = init_worker_task_manager(postgres_db)
 
 def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key: str) -> bool:
     """

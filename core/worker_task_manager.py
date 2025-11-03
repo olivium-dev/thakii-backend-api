@@ -9,6 +9,7 @@ import datetime
 import time
 from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
+from psycopg2.extras import RealDictCursor
 
 load_dotenv()
 
@@ -50,7 +51,7 @@ class WorkerTaskManager:
         conn = self.postgres_db.pool.getconn()
         try:
             # Use transaction with row-level locking to prevent race conditions
-            with conn.cursor(cursor_factory=self.postgres_db.RealDictCursor) as cur:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 # Begin transaction
                 cur.execute("BEGIN")
                 
@@ -224,7 +225,7 @@ class WorkerTaskManager:
         """
         conn = self.postgres_db.pool.getconn()
         try:
-            with conn.cursor(cursor_factory=self.postgres_db.RealDictCursor) as cur:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
                     SELECT * FROM video_tasks
                     WHERE assigned_worker = %s

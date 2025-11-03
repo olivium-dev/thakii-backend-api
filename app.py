@@ -1395,15 +1395,19 @@ def worker_update_task():
         if not all([video_id, worker_id, status]):
             return jsonify({"error": "video_id, worker_id, and status are required"}), 400
         
-        updates = {'status': status, 'updated_at': datetime.datetime.now()}
-        if 'progress' in data:
-            updates['progress'] = data['progress']
-        if 'pdf_url' in data:
-            updates['pdf_url'] = data['pdf_url']
-        if 'error_message' in data:
-            updates['error_message'] = data['error_message']
+        # Extract optional parameters
+        progress = data.get('progress')
+        pdf_url = data.get('pdf_url')
+        error_message = data.get('error_message')
         
-        success = worker_task_manager.update_task(video_id, worker_id, updates)
+        success = worker_task_manager.update_task(
+            video_id=video_id,
+            worker_id=worker_id,
+            status=status,
+            progress=progress,
+            pdf_url=pdf_url,
+            error_message=error_message
+        )
         if success:
             return jsonify({"success": True}), 200
         else:

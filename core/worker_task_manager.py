@@ -132,7 +132,7 @@ class WorkerTaskManager:
             print("⚠️ Worker API is disabled. Using legacy update method.")
             updates = {'status': status}
             if progress is not None:
-                updates['progress_percentage'] = progress
+                updates['progress'] = progress
             if pdf_url is not None:
                 updates['pdf_url'] = pdf_url
             if error_message is not None:
@@ -160,7 +160,7 @@ class WorkerTaskManager:
         
         # Add optional fields
         if progress is not None:
-            updates['progress_percentage'] = progress
+            updates['progress'] = progress
         
         if pdf_url is not None:
             updates['pdf_url'] = pdf_url

@@ -101,6 +101,12 @@ jobs:
           source venv/bin/activate
           pip install -q -r requirements.txt
           
+          echo '🔧 Applying database migrations for Worker API...'
+          # Apply database migration for worker assignment columns
+          if [ -f scripts/add_worker_assignment_columns.sql ]; then
+            PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -f scripts/add_worker_assignment_columns.sql && echo '✅ Database migration applied' || echo '⚠️ Database migration failed or already applied'
+          fi
+          
           echo '🔧 Configuring worker environment variables...'
           # Ensure .env file exists
           touch .env
@@ -119,9 +125,16 @@ jobs:
             sed -i 's|WORKER_PRIORITY_MODE=.*|WORKER_PRIORITY_MODE=primary-with-fallback|' .env
           fi
           
+          # Add Worker API configuration if not already present
+          if ! grep -q 'ENABLE_WORKER_API' .env; then
+            echo 'Adding Worker API configuration to .env file'
+            echo 'ENABLE_WORKER_API=false' >> .env
+            echo 'WORKER_HEARTBEAT_TIMEOUT=300' >> .env
+          fi
+          
           # Verify configuration
           echo 'Worker configuration:'
-          grep -E 'PRIMARY_WORKER_URL|FALLBACK_WORKER_URL|WORKER_PRIORITY_MODE' .env || echo 'Warning: Worker configuration not found'
+          grep -E 'PRIMARY_WORKER_URL|FALLBACK_WORKER_URL|WORKER_PRIORITY_MODE|ENABLE_WORKER_API' .env || echo 'Warning: Worker configuration not found'
           
           # Configure systemd service to load .env file
           echo '🔧 Configuring systemd service to load .env file...'
@@ -210,6 +223,32 @@ jobs:
         if [ $HTTP_CODE -eq 0 ] && [ ! -z "$HEALTH_RESPONSE" ]; then
           echo "✅ Backend is healthy"
           echo "$HEALTH_RESPONSE" | jq '.'
+          
+          # Extract and verify worker status
+          echo ""
+          echo "🔍 Verifying worker health from backend..."
+          echo "$HEALTH_RESPONSE" | jq '.workers' || echo "⚠️ Worker status not available"
+          
+          # Check if primary worker is healthy
+          PRIMARY_STATUS=$(echo "$HEALTH_RESPONSE" | jq -r '.workers.primary.status // "unknown"')
+          echo "Primary Worker Status: $PRIMARY_STATUS"
+          
+          if [ "$PRIMARY_STATUS" != "healthy" ]; then
+            echo "⚠️ Primary worker (thakii-03) is not healthy"
+            
+            # Check fallback worker
+            FALLBACK_STATUS=$(echo "$HEALTH_RESPONSE" | jq -r '.workers.fallback.status // "unknown"')
+            echo "Fallback Worker Status: $FALLBACK_STATUS"
+            
+            if [ "$FALLBACK_STATUS" != "healthy" ]; then
+              echo "❌ Both workers are unhealthy!"
+              exit 1
+            else
+              echo "✅ Fallback worker (thakii-02) is available"
+            fi
+          else
+            echo "✅ Primary worker (thakii-03) is healthy"
+          fi
         else
           echo "⚠️  Backend health check failed"
           exit 1
@@ -239,25 +278,38 @@ jobs:
           python3 -c 'import sys; sys.path.append(\".\"); from core.worker_manager import worker_manager; print(f\"Primary: {worker_manager.primary_worker_url or \"NOT SET\"}\"); print(f\"Fallback: {worker_manager.fallback_worker_url or \"NOT SET\"}\")' || echo '⚠️ Could not test worker manager configuration'
         "
     
-    - name: Test Worker Triggering
+    - name: Test Worker Triggering and Health
       env:
         BACKEND_PATH: ${{ env.BACKEND_PATH }}
       run: |
-        echo "🧪 Testing worker triggering..."
+        echo "🧪 Testing worker triggering and comprehensive health..."
         ssh thakii-server "
           set -e
           cd $BACKEND_PATH
           
-          echo '=== WORKER TRIGGER TEST ==='
+          echo '=== WORKER HEALTH CHECK ==='
           echo 'Checking if workers are accessible from backend...'
           
-          # Test primary worker accessibility
-          curl -s https://thakii-3.fanusdigital.site/thakii-worker/health | jq '.status' || echo 'Primary worker unreachable'
+          # Test primary worker with detailed checks
+          echo '🔍 Primary Worker (thakii-03):'
+          PRIMARY_HEALTH=\$(curl -s https://thakii-3.fanusdigital.site/thakii-worker/health)
+          if [ ! -z \"\$PRIMARY_HEALTH\" ]; then
+            echo \"\$PRIMARY_HEALTH\" | jq '{status, database, storage, ffmpeg: .ffmpeg.installed, queue}' || echo 'Primary worker response invalid'
+          else
+            echo '❌ Primary worker unreachable'
+          fi
           
-          # Test fallback worker accessibility
-          curl -s https://thakii-02.fanusdigital.site/thakii-worker/health | jq '.status' || echo 'Fallback worker unreachable'
+          echo ''
+          echo '🔍 Fallback Worker (thakii-02):'
+          FALLBACK_HEALTH=\$(curl -s https://thakii-02.fanusdigital.site/thakii-worker/health)
+          if [ ! -z \"\$FALLBACK_HEALTH\" ]; then
+            echo \"\$FALLBACK_HEALTH\" | jq '{status, database, storage}' || echo 'Fallback worker response invalid'
+          else
+            echo '❌ Fallback worker unreachable'
+          fi
           
-          echo '✅ Worker connectivity test complete'
+          echo ''
+          echo '✅ Worker health check complete'
         "
 
     - name: Notify deployment status

@@ -43,8 +43,10 @@ class WorkerTaskManager:
             
         # Check worker's current task count
         current_tasks = self._get_worker_active_tasks(worker_id)
+        print(f"🔍 Worker {worker_id} has {len(current_tasks)} active tasks (capacity: {worker_capacity})")
         if len(current_tasks) >= worker_capacity:
             print(f"⚠️ Worker {worker_id} at capacity ({len(current_tasks)}/{worker_capacity})")
+            print(f"   Active tasks: {[t.get('video_id') for t in current_tasks]}")
             return None
         
         # Get a connection from the pool

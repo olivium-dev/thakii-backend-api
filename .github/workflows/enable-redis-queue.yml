@@ -51,7 +51,10 @@ jobs:
       - name: Enable Redis Queue on thakii-02
         run: |
           echo "Enabling Redis Queue on thakii-02..."
-          sshpass -p "12344321" ssh -o StrictHostKeyChecking=no fanusdigital@localhost -p 2222 "cd ~/thakii-backend-api && bash -c '
+          # First check where thakii-backend-api is located
+          sshpass -p "12344321" ssh -o StrictHostKeyChecking=no fanusdigital@localhost -p 2222 "find / -name thakii-backend-api -type d 2>/dev/null || echo 'Not found'"
+          # Try with Desktop path
+          sshpass -p "12344321" ssh -o StrictHostKeyChecking=no fanusdigital@localhost -p 2222 "cd ~/Desktop/thakii-backend-api && bash -c '
             # Backup current .env file
             cp .env .env.backup-\$(date +%Y%m%d%H%M%S)
             
@@ -86,7 +89,10 @@ jobs:
       - name: Enable Redis Queue on thakii-03
         run: |
           echo "Enabling Redis Queue on thakii-03..."
-          sshpass -p "12344321" ssh -o StrictHostKeyChecking=no fanusdigital@localhost -p 2223 "cd ~/thakii-worker-service && bash -c '
+          # First check where thakii-worker-service is located
+          sshpass -p "12344321" ssh -o StrictHostKeyChecking=no fanusdigital@localhost -p 2223 "find / -name thakii-worker-service -type d 2>/dev/null || echo 'Not found'" || echo "thakii-03 not available"
+          # Try with Desktop path
+          sshpass -p "12344321" ssh -o StrictHostKeyChecking=no fanusdigital@localhost -p 2223 "cd ~/Desktop/thakii-worker-service && bash -c '
             # Backup current .env file
             cp .env .env.backup-\$(date +%Y%m%d%H%M%S)
             

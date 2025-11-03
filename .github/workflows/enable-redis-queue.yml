@@ -1,0 +1,114 @@
+name: Enable Redis Queue
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "yes" to confirm enabling Redis Queue'
+        required: true
+        default: 'no'
+
+jobs:
+  enable-redis:
+    if: ${{ github.event.inputs.confirm == 'yes' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Setup SSH via Cloudflare
+        uses: cloudflare/cloudflared-tunnel-action@v1
+        with:
+          url: ${{ secrets.SSH_TUNNEL_URL }}
+          tunnel-token: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+          
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          echo "${{ secrets.SSH_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          echo "Host thakii-02\n\tHostName localhost\n\tPort 2222\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile=/dev/null" > ~/.ssh/config
+          echo "Host thakii-03\n\tHostName localhost\n\tPort 2223\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile=/dev/null" >> ~/.ssh/config
+          
+      - name: Test SSH Connection
+        run: |
+          ssh thakii-02 "echo Connected to thakii-02"
+          ssh thakii-03 "echo Connected to thakii-03"
+          
+      - name: Enable Redis Queue on thakii-02
+        run: |
+          echo "Enabling Redis Queue on thakii-02..."
+          ssh thakii-02 "cd ~/thakii-backend-api && bash -c '
+            # Backup current .env file
+            cp .env .env.backup-\$(date +%Y%m%d%H%M%S)
+            
+            # Update .env file
+            if grep -q \"ENABLE_REDIS_QUEUE\" .env; then
+              sed -i \"s/ENABLE_REDIS_QUEUE=.*/ENABLE_REDIS_QUEUE=true/\" .env
+            else
+              echo \"ENABLE_REDIS_QUEUE=true\" >> .env
+            fi
+            
+            if grep -q \"REDIS_HOST\" .env; then
+              sed -i \"s/REDIS_HOST=.*/REDIS_HOST=localhost/\" .env
+            else
+              echo \"REDIS_HOST=localhost\" >> .env
+            fi
+            
+            if grep -q \"REDIS_PORT\" .env; then
+              sed -i \"s/REDIS_PORT=.*/REDIS_PORT=6379/\" .env
+            else
+              echo \"REDIS_PORT=6379\" >> .env
+            fi
+            
+            # Display updated .env
+            echo \"Updated .env file:\"
+            grep -E \"ENABLE_REDIS_QUEUE|REDIS_HOST|REDIS_PORT\" .env
+            
+            # Restart backend service
+            launchctl unload ~/Library/LaunchAgents/com.thakii.backend.plist
+            launchctl load -w ~/Library/LaunchAgents/com.thakii.backend.plist
+          '"
+          
+      - name: Enable Redis Queue on thakii-03
+        run: |
+          echo "Enabling Redis Queue on thakii-03..."
+          ssh thakii-03 "cd ~/thakii-worker-service && bash -c '
+            # Backup current .env file
+            cp .env .env.backup-\$(date +%Y%m%d%H%M%S)
+            
+            # Update .env file
+            if grep -q \"ENABLE_REDIS_QUEUE\" .env; then
+              sed -i \"s/ENABLE_REDIS_QUEUE=.*/ENABLE_REDIS_QUEUE=true/\" .env
+            else
+              echo \"ENABLE_REDIS_QUEUE=true\" >> .env
+            fi
+            
+            if grep -q \"REDIS_HOST\" .env; then
+              sed -i \"s/REDIS_HOST=.*/REDIS_HOST=localhost/\" .env
+            else
+              echo \"REDIS_HOST=localhost\" >> .env
+            fi
+            
+            if grep -q \"REDIS_PORT\" .env; then
+              sed -i \"s/REDIS_PORT=.*/REDIS_PORT=6379/\" .env
+            else
+              echo \"REDIS_PORT=6379\" >> .env
+            fi
+            
+            # Display updated .env
+            echo \"Updated .env file:\"
+            grep -E \"ENABLE_REDIS_QUEUE|REDIS_HOST|REDIS_PORT\" .env
+            
+            # Start RQ worker
+            launchctl load -w ~/Library/LaunchAgents/com.thakii.rq_worker.plist
+          '"
+          
+      - name: Verify Redis Queue Status
+        run: |
+          echo "Verifying Redis Queue status on thakii-02..."
+          ssh thakii-02 "curl -s http://localhost:5000/health | grep -E 'redis_queue|workers'"
+          
+          echo "Verifying RQ worker on thakii-03..."
+          ssh thakii-03 "ps aux | grep rq_worker"

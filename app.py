@@ -1,11 +1,14 @@
 import os
 import uuid
 import datetime
+import time
+import random
 from pathlib import Path
 from flask import Flask, request, jsonify, redirect, abort, g
 from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
+from psycopg2.extras import RealDictCursor
 from core.s3_storage import S3Storage
 from core.postgres_db import postgres_db
 from core.firestore_db import firestore_db  # Initialize Firebase on import
@@ -1442,6 +1445,41 @@ def recover_stale_tasks():
         return jsonify({"success": True, "recovered_count": count}), 200
     except Exception as e:
         print(f"❌ Error in recover_stale_tasks: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/internal/get-pending-tasks", methods=["GET"])
+def get_pending_tasks():
+    """Worker API endpoint to get pending tasks (compatibility with http_postgres_client)"""
+    enable_worker_api = os.getenv('ENABLE_WORKER_API', 'false').lower() == 'true'
+    if not enable_worker_api:
+        return jsonify({"error": "Worker API is not enabled"}), 403
+    
+    try:
+        limit = request.args.get('limit', default=10, type=int)
+        
+        # Get pending tasks from database
+        conn = postgres_db.pool.getconn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT * FROM video_tasks
+                    WHERE status IN ('in_queue', 'uploaded')
+                    ORDER BY created_at ASC
+                    LIMIT %s
+                """, (limit,))
+                tasks = cur.fetchall()
+                
+                # Convert datetime objects to ISO format strings
+                for task in tasks:
+                    for key, value in task.items():
+                        if isinstance(value, datetime.datetime):
+                            task[key] = value.isoformat()
+                
+                return jsonify({"success": True, "tasks": tasks}), 200
+        finally:
+            postgres_db.pool.putconn(conn)
+    except Exception as e:
+        print(f"❌ Error in get_pending_tasks: {e}")
         return jsonify({"error": str(e)}), 500
 
 # ============================================================================

@@ -1,0 +1,36 @@
+name: Check Backend Status
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Setup SSH via Cloudflare
+      uses: ./.github/actions/cloudflare-ssh
+      with:
+        ssh-private-key: ${{ secrets.THAKII_SSH_PRIVATE_KEY }}
+        server-hostname: thakii-02.fds-1.com
+        server-user: ec2-user
+        host-alias: 'thakii-backend'
+    
+    - name: Check Backend Status
+      run: |
+        ssh thakii-backend "
+          echo '🔍 Backend Service Status:'
+          sudo systemctl status thakii-backend.service --no-pager | head -20
+          
+          echo ''
+          echo '📄 Recent Backend Logs (last 30 lines):'
+          sudo journalctl -u thakii-backend.service --no-pager -n 30
+          
+          echo ''
+          echo '🔧 Environment Configuration:'
+          cd /home/ec2-user/thakii-backend-api
+          grep -E 'ENABLE_WORKER_API|PRIMARY_WORKER|FALLBACK_WORKER' .env
+          
+          echo ''
+          echo '🔍 Process Check:'
+          ps aux | grep -v grep | grep 'gunicorn.*app:app' | head -3
+        "

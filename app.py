@@ -3,6 +3,7 @@ import uuid
 import datetime
 import time
 import random
+import threading
 from pathlib import Path
 from flask import Flask, request, jsonify, redirect, abort, g
 from flask_cors import CORS
@@ -21,6 +22,7 @@ from core.websocket_manager import init_websocket, get_websocket_manager
 from core.worker_manager import worker_manager
 from core.email_service import email_service
 from core.worker_task_manager import init_worker_task_manager, get_worker_task_manager
+from core.batch_import_service import BatchImportService
 
 load_dotenv()
 
@@ -53,6 +55,14 @@ websocket_manager = init_websocket(app)
 
 # Initialize Worker Task Manager
 worker_task_manager = init_worker_task_manager(postgres_db)
+
+# Initialize Batch Import Service
+batch_import_service = BatchImportService(
+    postgres_db=postgres_db,
+    s3_storage=s3_storage,
+    websocket_manager=websocket_manager,
+    trigger_worker_fn=trigger_worker_processing
+)
 
 def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key: str) -> bool:
     """
@@ -1492,12 +1502,180 @@ def get_pending_tasks():
         print(f"❌ Error in get_pending_tasks: {e}")
         return jsonify({"error": str(e)}), 500
 
+# ========== BATCH IMPORT API ENDPOINTS ==========
+
+@app.route("/batch-import/submit", methods=["POST"])
+@require_auth
+def submit_batch_import():
+    """
+    Submit a batch import job (creates job and video records, returns immediately)
+    
+    Request Body:
+    {
+        "share_url": "https://fanusdigital.wolkesicher.de/s/TOKEN"
+    }
+    
+    Response:
+    {
+        "success": true,
+        "job_id": "uuid",
+        "total_videos": 5,
+        "total_size": 1048576
+    }
+    """
+    try:
+        data = request.get_json() or {}
+        share_url = data.get('share_url')
+        
+        if not share_url:
+            return jsonify({"error": "share_url is required"}), 400
+        
+        # Get current user
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+        
+        user_id = current_user.get('uid')
+        user_email = current_user.get('email')
+        
+        print(f"🎯 Batch import request from {user_email}")
+        print(f"   Share URL: {share_url}")
+        
+        # Create batch job (non-blocking)
+        job_result = batch_import_service.create_batch_job(user_id, user_email, share_url)
+        
+        if not job_result:
+            return jsonify({
+                "error": "Failed to create batch import job. Please check the share URL and try again."
+            }), 400
+        
+        print(f"   ✅ Created batch job: {job_result['job_id']}")
+        
+        return jsonify({
+            "success": True,
+            "job_id": job_result['job_id'],
+            "total_videos": job_result['total_videos'],
+            "total_size": job_result['total_size']
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Error in submit_batch_import: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route("/batch-import/status/<job_id>", methods=["GET"])
+@require_auth
+def get_batch_import_status(job_id):
+    """
+    Get status of a batch import job
+    
+    Response:
+    {
+        "job_id": "uuid",
+        "status": "pending|processing|completed|failed",
+        "total_videos": 5,
+        "processed_videos": 3,
+        "failed_videos": 1,
+        "created_at": "2024-01-01T10:00:00",
+        "videos": [
+            {
+                "video_name": "video1.mp4",
+                "status": "completed",
+                "progress_percent": 100,
+                "video_id": "uuid",
+                "error_message": null
+            }
+        ]
+    }
+    """
+    try:
+        # Get current user
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+        
+        user_id = current_user.get('uid')
+        
+        # Get job status
+        job_status = batch_import_service.get_batch_job_status(job_id, user_id)
+        
+        if not job_status:
+            return jsonify({"error": "Batch job not found"}), 404
+        
+        return jsonify(job_status), 200
+        
+    except Exception as e:
+        print(f"❌ Error in get_batch_import_status: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route("/batch-import/jobs", methods=["GET"])
+@require_auth
+def list_batch_import_jobs():
+    """
+    List batch import jobs for the current user
+    
+    Query Parameters:
+    - limit: Maximum number of jobs to return (default: 20)
+    
+    Response:
+    {
+        "jobs": [
+            {
+                "job_id": "uuid",
+                "share_url": "https://...",
+                "status": "completed",
+                "total_videos": 5,
+                "processed_videos": 4,
+                "failed_videos": 1,
+                "created_at": "2024-01-01T10:00:00",
+                "completed_at": "2024-01-01T10:30:00"
+            }
+        ]
+    }
+    """
+    try:
+        # Get current user
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+        
+        user_id = current_user.get('uid')
+        limit = request.args.get('limit', default=20, type=int)
+        
+        # Validate limit
+        if limit < 1 or limit > 100:
+            limit = 20
+        
+        # Get user's batch jobs
+        jobs = batch_import_service.list_user_batch_jobs(user_id, limit)
+        
+        return jsonify({"jobs": jobs}), 200
+        
+    except Exception as e:
+        print(f"❌ Error in list_batch_import_jobs: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
 # ============================================================================
+
+def start_batch_import_service():
+    """Start the batch import background service"""
+    print("🚀 Starting batch import background service...")
+    batch_thread = threading.Thread(
+        target=batch_import_service.run_service, 
+        daemon=True,
+        name="BatchImportService"
+    )
+    batch_thread.start()
+    print(f"   ✅ Batch import service started on thread: {batch_thread.name}")
 
 if __name__ == "__main__":
     # Configure Flask for large file uploads
     app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024 * 1024  # 5GB max file size
     app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0  # Disable caching for large files
+    
+    # Start background services
+    start_batch_import_service()
     
     # Run with WebSocket support
     if websocket_manager and websocket_manager.socketio:

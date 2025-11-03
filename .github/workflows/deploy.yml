@@ -101,11 +101,15 @@ jobs:
           source venv/bin/activate
           pip install -q -r requirements.txt
           
-          echo '🔧 Applying database migrations for Worker API...'
+          echo '🔧 Applying database migrations...'
           # Apply database migration for worker assignment columns
           if [ -f scripts/add_worker_assignment_columns.sql ]; then
-            PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -f scripts/add_worker_assignment_columns.sql && echo '✅ Database migration applied' || echo '⚠️ Database migration failed or already applied'
+            PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -f scripts/add_worker_assignment_columns.sql && echo '✅ Worker API migration applied' || echo '⚠️ Worker API migration failed or already applied'
           fi
+          
+          # Apply database schema updates (includes batch import tables)
+          echo '🔧 Applying batch import schema updates...'
+          PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -f scripts/setup_postgres.sql && echo '✅ Batch import schema applied' || echo '⚠️ Batch import schema failed or already applied'
           
           echo '🔧 Configuring worker environment variables...'
           # Ensure .env file exists

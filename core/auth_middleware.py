@@ -179,26 +179,32 @@ def verify_auth_token():
                 return None, f"Custom token verification failed: {str(custom_err)}"
 
         # If not custom token, try Firebase verification
-        # Try Firebase Admin first (if initialized)
+        # Skip Firebase Admin SDK and use JWKS directly (more reliable)
+        print(f"🔍 Verifying Firebase token with kid from header...")
         try:
-            if firebase_admin._apps:
-                decoded_token = auth.verify_id_token(token)
-                decoded_token['_token_type'] = 'firebase'
-                return decoded_token, None
-        except Exception as primary_err:
-            # Fallback to JWKS-based verification (does not require ADC)
+            decoded_token = _verify_with_jwks(token)
+            decoded_token['_token_type'] = 'firebase'
+            return decoded_token, None
+        except Exception as jwks_err:
+            print(f"❌ JWKS verification failed: {jwks_err}")
+            # Fallback to x509 certs
             try:
-                decoded_token = _verify_with_jwks(token)
+                print(f"🔄 Trying x509 certificate verification...")
+                decoded_token = _verify_with_x509(token)
                 decoded_token['_token_type'] = 'firebase'
                 return decoded_token, None
-            except Exception as fallback_err:
-                # Last resort: x509 certs
+            except Exception as x509_err:
+                print(f"❌ x509 verification failed: {x509_err}")
+                # Last resort: try Firebase Admin SDK
                 try:
-                    decoded_token = _verify_with_x509(token)
-                    decoded_token['_token_type'] = 'firebase'
-                    return decoded_token, None
-                except Exception as x509_err:
-                    return None, f"Firebase token verification failed: {str(x509_err)}"
+                    if firebase_admin._apps:
+                        print(f"🔄 Trying Firebase Admin SDK as last resort...")
+                        decoded_token = auth.verify_id_token(token)
+                        decoded_token['_token_type'] = 'firebase'
+                        return decoded_token, None
+                except Exception as admin_err:
+                    print(f"❌ Firebase Admin SDK failed: {admin_err}")
+                    return None, f"Firebase token verification failed: JWKS={str(jwks_err)}, x509={str(x509_err)}, Admin={str(admin_err)}"
 
         # If no Firebase app is initialized, use JWKS fallback
         try:

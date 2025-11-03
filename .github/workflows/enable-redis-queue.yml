@@ -16,11 +16,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
         
-      - name: Setup SSH via Cloudflare
-        uses: cloudflare/cloudflared-tunnel-action@v1
-        with:
-          url: ${{ secrets.SSH_TUNNEL_URL }}
-          tunnel-token: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+      - name: Install cloudflared
+        run: |
+          # Download and install cloudflared
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+          cloudflared --version
+          
+      - name: Setup SSH tunnel
+        run: |
+          # Create cloudflared directory
+          mkdir -p ~/.cloudflared
+          # Start cloudflared tunnel in background
+          echo "${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}" > ~/.cloudflared/cert.json
+          nohup cloudflared tunnel --url "${{ secrets.SSH_TUNNEL_URL }}" run &
+          # Wait for tunnel to start
+          sleep 10
           
       - name: Configure SSH
         run: |

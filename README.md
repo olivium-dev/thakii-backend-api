@@ -365,3 +365,4 @@ GitHub Actions can now assume AWS IAM roles for deployment.
 # Backend-Worker HTTP Integration Complete - Fri Sep 12 02:16:02 CEST 2025
 # 30-day token authentication deployed - Fri Sep 12 13:11:33 CEST 2025
 # Backend service restart to reload database schema after migration
+# Force deployment to enable Worker API

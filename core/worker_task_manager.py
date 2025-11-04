@@ -131,7 +131,8 @@ class WorkerTaskManager:
         if not self.is_enabled:
             print("⚠️ Worker API is disabled. Using legacy update method.")
             updates = {'status': status}
-            # Note: Database doesn't have progress column, skipping progress updates
+            if progress is not None:
+                updates['progress_percent'] = progress
             if pdf_url is not None:
                 updates['pdf_url'] = pdf_url
             if error_message is not None:
@@ -158,7 +159,8 @@ class WorkerTaskManager:
         }
         
         # Add optional fields
-        # Note: Database doesn't have progress column, skipping progress updates
+        if progress is not None:
+            updates['progress_percent'] = progress
         
         if pdf_url is not None:
             updates['pdf_url'] = pdf_url

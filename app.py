@@ -687,7 +687,9 @@ def list_videos():
                 "cancelled_by": task.get("cancelled_by"),
                 "cancellation_reason": task.get("cancellation_reason"),
                 "cancellation_requested": task.get("cancellation_requested", False),
-                "cancellation_requested_at": task.get("cancellation_requested_at")
+                "cancellation_requested_at": task.get("cancellation_requested_at"),
+                # Progress field
+                "progress_percent": task.get("progress_percent", 0)
             })
         
         return jsonify({

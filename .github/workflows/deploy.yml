@@ -106,6 +106,12 @@ jobs:
           if [ -f scripts/add_worker_api_columns.sql ]; then
             echo "🔧 Applying Worker API migration..."
             PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -f scripts/add_worker_api_columns.sql && echo "✅ Worker API migration applied" || echo "⚠️ Worker API migration failed or already applied"
+          fi
+          
+          # Apply progress column migration
+          if [ -f scripts/add_progress_column.sql ]; then
+            echo "🔧 Applying progress column migration..."
+            PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -f scripts/add_progress_column.sql && echo "✅ Progress column migration applied" || echo "⚠️ Progress column migration failed or already applied"
           fi          
           # Apply safe batch import schema (preserves existing data)
           echo '🔧 Applying safe batch import schema...'

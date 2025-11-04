@@ -77,6 +77,8 @@ class S3Storage:
     def download_pdf(self, video_id, original_filename=None):
         """Get PDF download URL from S3 with correct filename"""
         try:
+            import urllib.parse
+            
             # Use correct S3 path structure: pdfs/{video_id}/{video_id}.pdf
             pdf_key = f"pdfs/{video_id}/{video_id}.pdf"
             
@@ -89,13 +91,24 @@ class S3Storage:
             
             print(f"🔧 S3 Download: {pdf_key} → filename: {pdf_filename}")
             
+            # Encode filename for Content-Disposition header
+            # S3 requires ISO-8859-1 for regular filename parameter, so we use RFC 5987 format
+            # for UTF-8 filenames with special characters (like apostrophes)
+            # Format: attachment; filename*=UTF-8''encoded.pdf
+            encoded_filename = urllib.parse.quote(pdf_filename, safe='')
+            
+            # Create Content-Disposition header using only RFC 5987 format to avoid ISO-8859-1 errors
+            # Modern browsers support this format, and it handles UTF-8 characters correctly
+            # RFC 5987 format: filename*=UTF-8''encoded-filename
+            content_disposition = f"attachment; filename*=UTF-8''{encoded_filename}"
+            
             # Generate a presigned URL with Content-Disposition header
             download_url = self.s3_client.generate_presigned_url(
                 'get_object',
                 Params={
                     'Bucket': self.bucket_name, 
                     'Key': pdf_key,
-                    'ResponseContentDisposition': f'attachment; filename="{pdf_filename}"'
+                    'ResponseContentDisposition': content_disposition
                 },
                 ExpiresIn=3600  # URL expires in 1 hour
             )

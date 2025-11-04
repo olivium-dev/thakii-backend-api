@@ -2074,7 +2074,7 @@ def _process_single_url_import(video_id: str, filename: str, download_url: str, 
         
         # Upload to S3
         print(f"📤 Uploading to S3: {filename}")
-        s3_key = s3_storage.upload_video_stream(video_content, video_id, filename)
+        s3_key = s3_storage.upload_video(video_content, video_id, filename)
         print(f"✅ Uploaded to S3: {s3_key}")
         
         # Create database record

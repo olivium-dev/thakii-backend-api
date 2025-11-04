@@ -107,9 +107,9 @@ jobs:
             echo "🔧 Applying Worker API migration..."
             PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -f scripts/add_worker_api_columns.sql && echo "✅ Worker API migration applied" || echo "⚠️ Worker API migration failed or already applied"
           fi          
-          # Apply database schema updates (includes batch import tables)
-          echo '🔧 Applying batch import schema updates...'
-          PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -f scripts/setup_postgres.sql && echo '✅ Batch import schema applied' || echo '⚠️ Batch import schema failed or already applied'
+          # Apply safe batch import schema (preserves existing data)
+          echo '🔧 Applying safe batch import schema...'
+          PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -f scripts/create_batch_import_tables_safe.sql && echo '✅ Safe batch import schema applied' || echo '⚠️ Safe batch import schema failed'
           
           echo '🔧 Configuring worker environment variables...'
           # Ensure .env file exists

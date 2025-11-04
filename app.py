@@ -1882,6 +1882,250 @@ def list_batch_import_jobs():
         print(f"❌ Error in list_batch_import_jobs: {e}")
         return jsonify({"error": "Internal server error"}), 500
 
+# ==================== SINGLE URL IMPORT ====================
+
+@app.route("/import-url", methods=["POST"])
+@require_auth
+def import_single_url():
+    """
+    Import a single video from a direct URL or Nextcloud share
+    
+    Expected JSON payload:
+    {
+        "url": "https://example.com/video.mp4",
+        "filename": "optional-custom-name.mp4"
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "video_id": "uuid",
+        "filename": "video.mp4",
+        "message": "Video import started successfully"
+    }
+    """
+    try:
+        # Get current user
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+        
+        # Parse request data
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON payload required"}), 400
+        
+        url = data.get('url', '').strip()
+        custom_filename = data.get('filename', '').strip()
+        
+        if not url:
+            return jsonify({"error": "URL is required"}), 400
+        
+        # Validate URL format
+        if not (url.startswith('http://') or url.startswith('https://')):
+            return jsonify({"error": "Invalid URL format. Must start with http:// or https://"}), 400
+        
+        user_id = current_user.get('uid')
+        user_email = current_user.get('email')
+        
+        # Convert Nextcloud share URLs to direct download URLs
+        download_url = _convert_to_direct_url(url)
+        
+        # Extract filename from URL or use custom filename
+        if custom_filename:
+            filename = custom_filename
+        else:
+            filename = _extract_filename_from_url(download_url)
+        
+        # Validate filename
+        if not filename or not _is_valid_video_filename(filename):
+            return jsonify({"error": "Invalid video filename. Must be a video file (mp4, avi, mov, wmv, mkv, ts)"}), 400
+        
+        # Generate video ID
+        video_id = str(uuid.uuid4())
+        
+        print(f"📥 Single URL Import: {filename} from {url}")
+        print(f"   User: {user_email}")
+        print(f"   Video ID: {video_id}")
+        print(f"   Download URL: {download_url}")
+        
+        # Start import process in background
+        import_thread = threading.Thread(
+            target=_process_single_url_import,
+            args=(video_id, filename, download_url, user_id, user_email),
+            daemon=True,
+            name=f"SingleUrlImport-{video_id[:8]}"
+        )
+        import_thread.start()
+        
+        return jsonify({
+            "success": True,
+            "video_id": video_id,
+            "filename": filename,
+            "message": "Video import started successfully"
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Error in import_single_url: {e}")
+        return jsonify({"error": str(e)}), 500
+
+def _convert_to_direct_url(url: str) -> str:
+    """Convert Nextcloud share URLs to direct download URLs"""
+    # Handle wolkesicher.de/Nextcloud share URLs
+    if 'wolkesicher.de/s/' in url or '/s/' in url:
+        # Convert share URL to direct download URL
+        if url.endswith('/download'):
+            return url
+        elif '?' in url:
+            # Remove query parameters and add /download
+            base_url = url.split('?')[0]
+            return f"{base_url}/download"
+        else:
+            return f"{url}/download"
+    
+    # Handle other common share URL patterns
+    if 'nextcloud' in url.lower() and '/s/' in url:
+        if not url.endswith('/download'):
+            return f"{url}/download"
+    
+    # Return as-is for direct URLs
+    return url
+
+def _extract_filename_from_url(url: str) -> str:
+    """Extract filename from URL"""
+    try:
+        # Remove query parameters
+        clean_url = url.split('?')[0]
+        
+        # Get the last part of the URL path
+        filename = clean_url.split('/')[-1]
+        
+        # If no filename or no extension, try to get from URL path
+        if not filename or '.' not in filename:
+            # Look for filename in the URL path
+            path_parts = clean_url.split('/')
+            for part in reversed(path_parts):
+                if '.' in part and len(part) > 3:
+                    filename = part
+                    break
+        
+        # If still no valid filename, use a default
+        if not filename or '.' not in filename:
+            filename = "imported_video.mp4"
+        
+        # Decode URL encoding
+        import urllib.parse
+        filename = urllib.parse.unquote(filename)
+        
+        return filename
+        
+    except Exception as e:
+        print(f"⚠️ Error extracting filename from URL: {e}")
+        return "imported_video.mp4"
+
+def _is_valid_video_filename(filename: str) -> bool:
+    """Check if filename has a valid video extension"""
+    if not filename:
+        return False
+    
+    valid_extensions = ['.mp4', '.avi', '.mov', '.wmv', '.mkv', '.ts', '.m4v', '.flv', '.webm']
+    filename_lower = filename.lower()
+    
+    return any(filename_lower.endswith(ext) for ext in valid_extensions)
+
+def _process_single_url_import(video_id: str, filename: str, download_url: str, user_id: str, user_email: str):
+    """Process single URL import in background"""
+    try:
+        print(f"🔄 Starting download: {filename}")
+        
+        # Download the video file
+        import requests
+        import io
+        
+        # Set headers to mimic a browser request
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        # Download with streaming
+        response = requests.get(download_url, headers=headers, stream=True, timeout=30)
+        response.raise_for_status()
+        
+        # Check content type
+        content_type = response.headers.get('content-type', '').lower()
+        if content_type and not any(vid_type in content_type for vid_type in ['video', 'octet-stream', 'application']):
+            raise Exception(f"Invalid content type: {content_type}. Expected video file.")
+        
+        # Read content into memory
+        video_content = io.BytesIO()
+        total_size = 0
+        
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                video_content.write(chunk)
+                total_size += len(chunk)
+                
+                # Limit file size (2GB max)
+                if total_size > 2 * 1024 * 1024 * 1024:
+                    raise Exception("File too large (max 2GB)")
+        
+        video_content.seek(0)
+        print(f"✅ Downloaded: {filename} ({total_size} bytes)")
+        
+        # Upload to S3
+        print(f"📤 Uploading to S3: {filename}")
+        s3_key = s3_storage.upload_video_stream(video_content, video_id, filename)
+        print(f"✅ Uploaded to S3: {s3_key}")
+        
+        # Create database record
+        task_data = postgres_db.create_video_task(
+            video_id, filename, user_id, user_email, "in_queue", s3_key=s3_key
+        )
+        print(f"✅ Created task: {video_id}")
+        
+        # Trigger worker processing
+        success = trigger_worker_processing(
+            video_id=video_id,
+            user_id=user_id,
+            filename=filename,
+            s3_key=s3_key
+        )
+        
+        if success:
+            print(f"✅ Worker triggered for: {video_id}")
+        else:
+            print(f"⚠️ Worker trigger failed for: {video_id}")
+        
+        # Notify via WebSocket
+        if websocket_manager:
+            websocket_manager.notify_task_update(user_id, {
+                'video_id': video_id,
+                'status': 'in_queue',
+                'filename': filename
+            })
+        
+        print(f"🎉 Single URL import completed: {filename}")
+        
+    except Exception as e:
+        print(f"❌ Single URL import failed: {filename} - {e}")
+        
+        # Update database with error
+        try:
+            postgres_db.create_video_task(
+                video_id, filename, user_id, user_email, "failed", error_message=str(e)
+            )
+        except Exception as db_error:
+            print(f"❌ Failed to create error task: {db_error}")
+        
+        # Notify via WebSocket
+        if websocket_manager:
+            websocket_manager.notify_task_update(user_id, {
+                'video_id': video_id,
+                'status': 'failed',
+                'filename': filename,
+                'error': str(e)
+            })
+
 # ============================================================================
 
 def start_batch_import_service():

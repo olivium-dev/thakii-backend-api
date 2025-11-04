@@ -75,7 +75,16 @@ def trigger_worker_processing(video_id: str, user_id: str, filename: str, s3_key
     """
     Trigger worker processing via HTTP with primary/fallback support
     Uses worker_manager for intelligent routing and automatic failover
+    
+    NOTE: If ENABLE_WORKER_API=true, this function does NOT trigger workers.
+    Workers will poll for tasks themselves via API or database.
     """
+    # Check if Worker API is enabled - if so, workers poll themselves, don't trigger
+    enable_worker_api = os.getenv('ENABLE_WORKER_API', 'false').lower() == 'true'
+    if enable_worker_api:
+        print(f"🔄 Worker API enabled - workers will poll for task: {video_id}")
+        return True  # Return success, workers will pick up via polling
+    
     payload = {
         "video_id": video_id,
         "user_id": user_id,

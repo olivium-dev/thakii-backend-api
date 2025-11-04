@@ -132,8 +132,12 @@ jobs:
           # Add Worker API configuration if not already present
           if ! grep -q 'ENABLE_WORKER_API' .env; then
             echo 'Adding Worker API configuration to .env file'
-            echo 'ENABLE_WORKER_API=false' >> .env
+            echo 'ENABLE_WORKER_API=true' >> .env
             echo 'WORKER_HEARTBEAT_TIMEOUT=300' >> .env
+          else
+            # Update to enable Worker API (workers will poll instead of being triggered)
+            echo 'Updating Worker API configuration to enabled'
+            sed -i 's|ENABLE_WORKER_API=.*|ENABLE_WORKER_API=true|' .env
           fi
           
           # Verify configuration

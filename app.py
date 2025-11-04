@@ -763,6 +763,128 @@ def download_pdf(video_id):
         print(f"Error generating download URL: {str(e)}")
         return jsonify({"error": f"Failed to generate download URL: {str(e)}"}), 500
 
+@app.route("/cancel/<video_id>", methods=["POST"])
+@require_auth
+def cancel_video(video_id):
+    """
+    Cancel video processing at any stage
+    - Works for videos in any status
+    - Properly cleans up resources
+    - Notifies worker if currently processing
+    """
+    try:
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "Authentication required"}), 401
+        
+        # Get current task status
+        task = postgres_db.get_video_task(video_id)
+        
+        if not task:
+            return jsonify({"error": "Video not found"}), 404
+        
+        # Check ownership or admin rights
+        if not is_super_admin(current_user['email']) and task.get('user_id') != current_user['uid']:
+            return jsonify({"error": "Access denied"}), 403
+        
+        current_status = task.get('status')
+        
+        # Get cancellation reason from request
+        request_data = request.get_json() or {}
+        reason = request_data.get('reason', 'User requested cancellation')
+        cleanup_completed = request_data.get('cleanup_completed', False)
+        
+        print(f"🚫 Cancellation request for video {video_id} (status: {current_status}) by {current_user['email']}")
+        
+        # Use database function for atomic cancellation
+        conn = postgres_db.pool.getconn()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT cancel_video_task(%s, %s, %s)
+                """, (video_id, current_user['email'], reason))
+                
+                success = cursor.fetchone()[0]
+                conn.commit()
+                
+                if not success:
+                    return jsonify({"error": "Failed to cancel video"}), 500
+                
+        finally:
+            postgres_db.pool.putconn(conn)
+        
+        # Handle resource cleanup based on status
+        if current_status in ['done', 'completed']:
+            if cleanup_completed:
+                # Clean up S3 files for completed videos
+                try:
+                    if task.get('s3_key'):
+                        s3_storage.delete_file(task['s3_key'])
+                    if task.get('pdf_url'):
+                        # Extract S3 key from PDF URL
+                        pdf_key = f"pdfs/{video_id}.pdf"
+                        s3_storage.delete_file(pdf_key)
+                except Exception as e:
+                    print(f"⚠️ Error cleaning up S3 files: {e}")
+                
+                message = "Completed video cancelled and cleaned up"
+            else:
+                message = "Video marked as cancelled (files preserved)"
+        
+        elif current_status == 'failed':
+            # Clean up any S3 files for failed videos
+            try:
+                if task.get('s3_key'):
+                    s3_storage.delete_file(task['s3_key'])
+            except Exception as e:
+                print(f"⚠️ Error cleaning up S3 files: {e}")
+            
+            message = "Failed video cancelled"
+        
+        elif current_status == 'processing':
+            message = "Processing video cancellation initiated - worker will stop shortly"
+        
+        elif current_status in ['in_queue', 'uploaded']:
+            # Clean up S3 files for queued videos
+            try:
+                if task.get('s3_key'):
+                    s3_storage.delete_file(task['s3_key'])
+            except Exception as e:
+                print(f"⚠️ Error cleaning up S3 files: {e}")
+            
+            message = "Queued video cancelled successfully"
+        
+        else:
+            message = f"Video cancelled (was in {current_status} state)"
+        
+        # Notify via WebSocket if available
+        try:
+            if websocket_manager:
+                status_to_send = 'cancelled' if current_status != 'processing' else 'cancelling'
+                websocket_manager.notify_task_update(current_user['uid'], {
+                    'video_id': video_id,
+                    'status': status_to_send,
+                    'message': 'Video cancelled by user'
+                })
+        except Exception as e:
+            print(f"⚠️ WebSocket notification failed: {e}")
+        
+        print(f"✅ Video {video_id} cancellation processed successfully")
+        
+        return jsonify({
+            "success": True,
+            "message": message,
+            "video_id": video_id,
+            "cancelled_by": current_user['email'],
+            "reason": reason
+        }), 200
+    
+    except Exception as e:
+        print(f"❌ Error cancelling video {video_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Failed to cancel video: {str(e)}"}), 500
+
 # Admin endpoints
 @app.route("/admin/videos", methods=["GET"])
 @require_admin
@@ -1481,6 +1603,85 @@ def recover_stale_tasks():
         return jsonify({"success": True, "recovered_count": count}), 200
     except Exception as e:
         print(f"❌ Error in recover_stale_tasks: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/internal/worker/check-cancellation/<video_id>", methods=["GET"])
+def check_video_cancellation(video_id):
+    """Worker API endpoint to check if video cancellation is requested"""
+    enable_worker_api = os.getenv('ENABLE_WORKER_API', 'false').lower() == 'true'
+    if not enable_worker_api:
+        return jsonify({"error": "Worker API is not enabled"}), 403
+    
+    try:
+        # Use database function to check cancellation
+        conn = postgres_db.pool.getconn()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT is_cancellation_requested(%s)
+                """, (video_id,))
+                
+                cancelled = cursor.fetchone()[0]
+                
+                # Also get current task status for context
+                cursor.execute("""
+                    SELECT status, cancelled, cancellation_reason
+                    FROM video_tasks
+                    WHERE video_id = %s
+                """, (video_id,))
+                
+                task_info = cursor.fetchone()
+                
+                if task_info:
+                    status, is_cancelled, reason = task_info
+                    return jsonify({
+                        "video_id": video_id,
+                        "cancellation_requested": cancelled,
+                        "cancelled": is_cancelled,
+                        "status": status,
+                        "cancellation_reason": reason
+                    }), 200
+                else:
+                    return jsonify({"error": "Video not found"}), 404
+                
+        finally:
+            postgres_db.pool.putconn(conn)
+            
+    except Exception as e:
+        print(f"❌ Error checking cancellation for {video_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/internal/worker/complete-cancellation/<video_id>", methods=["POST"])
+def complete_video_cancellation(video_id):
+    """Worker API endpoint to complete video cancellation"""
+    enable_worker_api = os.getenv('ENABLE_WORKER_API', 'false').lower() == 'true'
+    if not enable_worker_api:
+        return jsonify({"error": "Worker API is not enabled"}), 403
+    
+    try:
+        # Use database function to complete cancellation
+        conn = postgres_db.pool.getconn()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT complete_cancellation(%s)
+                """, (video_id,))
+                
+                conn.commit()
+                
+                print(f"✅ Worker completed cancellation for video {video_id}")
+                
+                return jsonify({
+                    "success": True,
+                    "video_id": video_id,
+                    "message": "Cancellation completed"
+                }), 200
+                
+        finally:
+            postgres_db.pool.putconn(conn)
+            
+    except Exception as e:
+        print(f"❌ Error completing cancellation for {video_id}: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/internal/get-pending-tasks", methods=["GET"])

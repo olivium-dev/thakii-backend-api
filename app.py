@@ -680,7 +680,14 @@ def list_videos():
                 "date": task.get("created_at") or task.get("upload_date"),  # Backup field
                 "user_email": task.get("user_email"),  # Include for admin view
                 "created_at": task.get("created_at"),
-                "updated_at": task.get("updated_at")
+                "updated_at": task.get("updated_at"),
+                # Cancellation fields
+                "cancelled": task.get("cancelled", False),
+                "cancelled_at": task.get("cancelled_at"),
+                "cancelled_by": task.get("cancelled_by"),
+                "cancellation_reason": task.get("cancellation_reason"),
+                "cancellation_requested": task.get("cancellation_requested", False),
+                "cancellation_requested_at": task.get("cancellation_requested_at")
             })
         
         return jsonify({

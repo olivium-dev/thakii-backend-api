@@ -7,6 +7,9 @@ using thakii.service.ServiceCatalog;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Listen on the same port as the old Python backend (5001) so the existing Nginx/proxy config keeps working
+builder.WebHost.UseUrls("http://0.0.0.0:5001");
+
 // Kestrel: allow unlimited request body size (null = no limit)
 builder.WebHost.ConfigureKestrel(options =>
 {

@@ -67,10 +67,12 @@ jobs:
 
             echo '📥 Pulling latest code...'
             git fetch origin
-            git reset --hard origin/main
+            git checkout PROF-572-Thakii-BE-Setup-and-integrate-Wallet-and-payment-gateway-with-Thakii || \
+              git checkout -b PROF-572-Thakii-BE-Setup-and-integrate-Wallet-and-payment-gateway-with-Thakii origin/PROF-572-Thakii-BE-Setup-and-integrate-Wallet-and-payment-gateway-with-Thakii
+            git reset --hard origin/PROF-572-Thakii-BE-Setup-and-integrate-Wallet-and-payment-gateway-with-Thakii
 
             echo '📦 Building and publishing...'
-            dotnet publish -c Release -o ./publish
+            dotnet publish ThakiiBackend.Api.csproj -c Release -o ./publish
 
             echo '🔧 Applying database migrations (if scripts exist)...'
             for f in scripts/*.sql; do

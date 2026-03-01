@@ -1,4 +1,4 @@
-name: Deploy Backend to Server (.NET)
+name: Deploy Backend to Server
 
 on:
   push:
@@ -9,8 +9,8 @@ on:
 env:
   SERVER_HOST: thakii-02.fds-1.com
   SERVER_USER: ec2-user
-  # Server path where this repo is cloned (ThakiiBackend.Api)
-  BACKEND_PATH: /home/ec2-user/ThakiiBackend.Api
+  # Server path where this repo is cloned (matches original Python backend path)
+  BACKEND_PATH: /home/ec2-user/thakii-backend-api
   SERVICE_NAME: thakii-backend
 
 jobs:

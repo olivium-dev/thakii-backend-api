@@ -1,0 +1,132 @@
+name: Enable Redis Queue
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "yes" to confirm enabling Redis Queue'
+        required: true
+        default: 'no'
+
+jobs:
+  enable-redis:
+    if: ${{ github.event.inputs.confirm == 'yes' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Install cloudflared
+        run: |
+          # Download and install cloudflared
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+          cloudflared --version
+          
+      - name: Setup SSH tunnel
+        run: |
+          # Start cloudflared tunnel in background using the command from the terminal
+          nohup cloudflared access ssh --hostname ssh-thakii-3.fanusdigital.site --url ssh://localhost:2222 &
+          # Wait for tunnel to start
+          sleep 10
+          
+      - name: Configure SSH with sshpass
+        run: |
+          # Install sshpass for password authentication
+          sudo apt-get update && sudo apt-get install -y sshpass
+          
+          # Configure SSH
+          mkdir -p ~/.ssh
+          echo "Host thakii-02\n\tHostName localhost\n\tPort 2222\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile=/dev/null" > ~/.ssh/config
+          echo "Host thakii-03\n\tHostName localhost\n\tPort 2223\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile=/dev/null" >> ~/.ssh/config
+          
+          # Test SSH password
+          echo "SSH password is set to: 12344321"
+          
+      - name: Test SSH Connection
+        run: |
+          sshpass -p "12344321" ssh -o StrictHostKeyChecking=no fanusdigital@localhost -p 2222 "echo Connected to thakii-02"
+          sshpass -p "12344321" ssh -o StrictHostKeyChecking=no fanusdigital@localhost -p 2223 "echo Connected to thakii-03" || echo "thakii-03 not available, continuing with thakii-02 only"
+          
+      - name: Enable Redis Queue on thakii-02
+        run: |
+          echo "Enabling Redis Queue on thakii-02..."
+          # First check where thakii-backend-api is located
+          sshpass -p "12344321" ssh -o StrictHostKeyChecking=no fanusdigital@localhost -p 2222 "find / -name thakii-backend-api -type d 2>/dev/null || echo 'Not found'"
+          # Try with Desktop path
+          sshpass -p "12344321" ssh -o StrictHostKeyChecking=no fanusdigital@localhost -p 2222 "cd ~/Desktop/thakii-backend-api && bash -c '
+            # Backup current .env file
+            cp .env .env.backup-\$(date +%Y%m%d%H%M%S)
+            
+            # Update .env file
+            if grep -q \"ENABLE_REDIS_QUEUE\" .env; then
+              sed -i \"\" \"s/ENABLE_REDIS_QUEUE=.*/ENABLE_REDIS_QUEUE=true/\" .env
+            else
+              echo \"ENABLE_REDIS_QUEUE=true\" >> .env
+            fi
+            
+            if grep -q \"REDIS_HOST\" .env; then
+              sed -i \"\" \"s/REDIS_HOST=.*/REDIS_HOST=localhost/\" .env
+            else
+              echo \"REDIS_HOST=localhost\" >> .env
+            fi
+            
+            if grep -q \"REDIS_PORT\" .env; then
+              sed -i \"\" \"s/REDIS_PORT=.*/REDIS_PORT=6379/\" .env
+            else
+              echo \"REDIS_PORT=6379\" >> .env
+            fi
+            
+            # Display updated .env
+            echo \"Updated .env file:\"
+            grep -E \"ENABLE_REDIS_QUEUE|REDIS_HOST|REDIS_PORT\" .env
+            
+            # Restart backend service
+            launchctl unload ~/Library/LaunchAgents/com.thakii.backend.plist
+            launchctl load -w ~/Library/LaunchAgents/com.thakii.backend.plist
+          '"
+          
+      - name: Enable Redis Queue on thakii-03
+        run: |
+          echo "Enabling Redis Queue on thakii-03..."
+          # First check where thakii-worker-service is located
+          sshpass -p "12344321" ssh -o StrictHostKeyChecking=no fanusdigital@localhost -p 2223 "find / -name thakii-worker-service -type d 2>/dev/null || echo 'Not found'" || echo "thakii-03 not available"
+          # Try with Desktop path
+          sshpass -p "12344321" ssh -o StrictHostKeyChecking=no fanusdigital@localhost -p 2223 "cd ~/Desktop/thakii-worker-service && bash -c '
+            # Backup current .env file
+            cp .env .env.backup-\$(date +%Y%m%d%H%M%S)
+            
+            # Update .env file
+            if grep -q \"ENABLE_REDIS_QUEUE\" .env; then
+              sed -i \"\" \"s/ENABLE_REDIS_QUEUE=.*/ENABLE_REDIS_QUEUE=true/\" .env
+            else
+              echo \"ENABLE_REDIS_QUEUE=true\" >> .env
+            fi
+            
+            if grep -q \"REDIS_HOST\" .env; then
+              sed -i \"\" \"s/REDIS_HOST=.*/REDIS_HOST=localhost/\" .env
+            else
+              echo \"REDIS_HOST=localhost\" >> .env
+            fi
+            
+            if grep -q \"REDIS_PORT\" .env; then
+              sed -i \"\" \"s/REDIS_PORT=.*/REDIS_PORT=6379/\" .env
+            else
+              echo \"REDIS_PORT=6379\" >> .env
+            fi
+            
+            # Display updated .env
+            echo \"Updated .env file:\"
+            grep -E \"ENABLE_REDIS_QUEUE|REDIS_HOST|REDIS_PORT\" .env
+            
+            # Start RQ worker
+            launchctl load -w ~/Library/LaunchAgents/com.thakii.rq_worker.plist
+          '" || echo "thakii-03 not available, skipping worker configuration"
+          
+      - name: Verify Redis Queue Status
+        run: |
+          echo "Verifying Redis Queue status on thakii-02..."
+          sshpass -p "12344321" ssh -o StrictHostKeyChecking=no fanusdigital@localhost -p 2222 "curl -s http://localhost:5000/health | grep -E 'redis_queue|workers'"
+          
+          echo "Verifying RQ worker on thakii-03..."
+          sshpass -p "12344321" ssh -o StrictHostKeyChecking=no fanusdigital@localhost -p 2223 "ps aux | grep rq_worker" || echo "thakii-03 not available, skipping worker verification"

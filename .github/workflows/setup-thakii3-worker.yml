@@ -1,0 +1,62 @@
+name: Setup thakii-3 Worker
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Setup and Install psycopg2 on thakii-3
+      run: |
+        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared.deb
+        sudo apt-get update && sudo apt-get install -y sshpass
+        
+        echo "🔧 SETTING UP THAKII-3 WORKER FOR POSTGRESQL CONNECTION"
+        
+        sshpass -p "12344321" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          -o ProxyCommand="cloudflared access ssh --hostname ssh-thakii-3.fanusdigital.site" \
+          fanusdigital@ssh-thakii-3.fanusdigital.site "
+          
+          cd ~/thakii-worker-service
+          
+          echo '=== Installing psycopg2-binary ==='
+          pip3 install psycopg2-binary
+          
+          echo ''
+          echo '=== Testing PostgreSQL connection to thakii-02 ==='
+          python3 << 'PYEOF'
+import psycopg2
+try:
+    conn = psycopg2.connect(
+        host='localhost',
+        port='15432',
+        dbname='thakii_production',
+        user='thakii_user',
+        password='P@ssw0rd768_DB',
+        connect_timeout=10
+    )
+    cur = conn.cursor()
+    cur.execute('SELECT NOW(), COUNT(*) FROM video_tasks WHERE status = %s;', ('in_queue',))
+    result = cur.fetchone()
+    print(f'✅ Connection successful!')
+    print(f'   Server time: {result[0]}')
+    print(f'   Videos in queue: {result[1]}')
+    conn.close()
+except Exception as e:
+    print(f'❌ Connection failed: {e}')
+    exit(1)
+PYEOF
+          
+          echo ''
+          echo '=== Restarting worker ==='
+          pkill -f 'python.*api_server' || echo 'No worker running'
+          nohup python3 api_server.py > worker.log 2>&1 &
+          sleep 3
+          ps aux | grep 'python.*api_server' | grep -v grep && echo '✅ Worker restarted' || echo '❌ Failed'
+          
+          echo ''
+          echo '=== Testing worker health ==='
+          curl -s http://localhost:8000/health
+        "

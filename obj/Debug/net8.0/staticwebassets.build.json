@@ -1,0 +1,11 @@
+{
+  "Version": 1,
+  "Hash": "JTQYHS1sGpMc6yMWBJ+M3Xhh9D6yYgagxQf3uLo+vMA=",
+  "Source": "ThakiiBackend.Api",
+  "BasePath": "_content/ThakiiBackend.Api",
+  "Mode": "Default",
+  "ManifestType": "Build",
+  "ReferencedProjectsConfiguration": [],
+  "DiscoveryPatterns": [],
+  "Assets": []
+}

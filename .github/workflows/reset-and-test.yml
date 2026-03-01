@@ -1,0 +1,161 @@
+name: Reset Queue and Fresh Test
+
+on:
+  workflow_dispatch:
+
+env:
+  SERVER_HOST: thakii-02.fds-1.com
+  SERVER_USER: ec2-user
+  BACKEND_PATH: /home/ec2-user/ThakiiBackend.Api
+
+jobs:
+  reset_and_test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup Cloudflare Tunnel for SSH
+      run: |
+        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared.deb
+        mkdir -p ~/.ssh
+        echo "${{ secrets.thakii_ssh_private_key }}" > ~/.ssh/thakii-key
+        chmod 600 ~/.ssh/thakii-key
+        
+        echo "Host thakii-server" >> ~/.ssh/config
+        echo "  HostName $SERVER_HOST" >> ~/.ssh/config
+        echo "  User $SERVER_USER" >> ~/.ssh/config
+        echo "  IdentityFile ~/.ssh/thakii-key" >> ~/.ssh/config
+        echo "  ProxyCommand cloudflared access ssh --hostname %h" >> ~/.ssh/config
+        echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+        chmod 600 ~/.ssh/config
+    
+    - name: Reset All Queued Videos to Failed
+      run: |
+        echo "🔄 Resetting all queued videos to failed status..."
+        ssh thakii-server "
+          echo '=== RESETTING ALL QUEUED VIDEOS ==='
+          
+          # Show current queue status
+          echo 'Current queue status:'
+          PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -c \"
+            SELECT status, COUNT(*) as count 
+            FROM video_tasks 
+            WHERE status IN ('in_queue', 'processing', 'uploaded') 
+            GROUP BY status 
+            ORDER BY count DESC;
+          \"
+          
+          echo ''
+          echo 'Converting all queued/processing videos to failed...'
+          PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -c \"
+            UPDATE video_tasks 
+            SET status = 'failed',
+                error_message = 'Reset to failed for fresh testing - $(date)',
+                updated_at = NOW()
+            WHERE status IN ('in_queue', 'processing', 'uploaded');
+          \"
+          
+          echo ''
+          echo 'New queue status after reset:'
+          PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -c \"
+            SELECT status, COUNT(*) as count 
+            FROM video_tasks 
+            GROUP BY status 
+            ORDER BY count DESC;
+          \"
+          
+          echo '✅ All queued videos reset to failed'
+        "
+    
+    - name: Fresh Upload Test with Real-time Monitoring
+      run: |
+        echo "🧪 Starting fresh upload test with monitoring..."
+        
+        # Create test file
+        echo "Fresh Test - $(date)" > /tmp/fresh_test_$(date +%s).txt
+        TEST_FILE="/tmp/fresh_test_$(date +%s).txt"
+        echo "Test file created: $TEST_FILE"
+        
+        # Upload via backend API
+        echo "📤 Uploading test file..."
+        BACKEND_TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ0aGFraWktYmFja2VuZCIsImF1ZCI6InRoYWtpaS1mcm9udGVuZCIsImlhdCI6MTc2MTk1MTIzNCwiZXhwIjoxNzYyMjEwNDM0LCJuYmYiOjE3NjE5NTEyMzQsInVzZXJfaWQiOiJXVzBNTXdHZ3FiWnNhdXl0MG5GelpCMVJrYmQyIiwiZW1haWwiOiJvdWRheS5raGFsZWRAZ21haWwuY29tIiwibmFtZSI6Ik91ZGF5IEtoYWxlZCIsInBpY3R1cmUiOiJodHRwczovL2xoMy5nb29nbGV1c2VyY29udGVudC5jb20vYS9BQ2c4b2NKWWI1TjJSdkNvOVpCVlp1dzlpS1JlZGJlSmJSX1EzMW1pQV9Gd1ljaWNQZjd6d25ZPXM5Ni1jIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsInRva2VuX3R5cGUiOiJjdXN0b21fYmFja2VuZCIsInRva2VuX3ZlcnNpb24iOiIxLjAiLCJpc19hZG1pbiI6dHJ1ZSwiZmlyZWJhc2VfcHJvdmlkZXIiOiJ1bmtub3duIiwiYXV0aF90aW1lIjoxNzYxOTUxMTg2LCJ0b2tlbl9oYXNoIjoiM2FlZTI2ZGRjMjhkZDg4MyJ9.FHONNJ8H57bDsnishJYMHUqjIsZwLqecivVRmSQ9pxI"
+        
+        UPLOAD_RESULT=$(curl -s -X POST https://thakii-02.fanusdigital.site/thakii-be/upload \
+          -H "Authorization: Bearer $BACKEND_TOKEN" \
+          -F "file=@$TEST_FILE")
+        
+        echo "Upload result:"
+        echo "$UPLOAD_RESULT" | jq '.'
+        
+        VIDEO_ID=$(echo "$UPLOAD_RESULT" | jq -r '.video_id')
+        
+        if [ "$VIDEO_ID" = "null" ] || [ -z "$VIDEO_ID" ]; then
+          echo "❌ Upload failed"
+          exit 1
+        fi
+        
+        echo "✅ Video uploaded: $VIDEO_ID"
+        echo ""
+        
+        # Monitor for 5 minutes with real-time status checks
+        echo "🔍 Starting 5-minute monitoring of video $VIDEO_ID..."
+        
+        for i in {1..30}; do
+          echo "📊 Check $i/30 ($(date))..."
+          
+          # Check status via API
+          STATUS_RESULT=$(curl -s -X GET https://thakii-02.fanusdigital.site/thakii-be/list \
+            -H "Authorization: Bearer $BACKEND_TOKEN" | \
+            jq --arg vid "$VIDEO_ID" '.videos[] | select(.video_id == $vid)')
+          
+          if [ ! -z "$STATUS_RESULT" ]; then
+            echo "$STATUS_RESULT" | jq '{video_id, filename, status, updated_at, processed_by_worker}'
+            
+            STATUS_VALUE=$(echo "$STATUS_RESULT" | jq -r '.status')
+            
+            # Check for completion or failure
+            if [ "$STATUS_VALUE" = "done" ] || [ "$STATUS_VALUE" = "completed" ]; then
+              echo ""
+              echo "🎉 SUCCESS! Video completed processing!"
+              echo "Final status: $STATUS_VALUE"
+              break
+            elif [ "$STATUS_VALUE" = "failed" ]; then
+              echo ""
+              echo "❌ Video failed processing"
+              echo "Checking error message..."
+              echo "$STATUS_RESULT" | jq '.error_message'
+              break
+            fi
+          else
+            echo "⚠️ Video not found in list"
+          fi
+          
+          # Check backend logs for this video
+          ssh thakii-server "
+            echo 'Backend logs for $VIDEO_ID:'
+            grep -a '$VIDEO_ID' $BACKEND_PATH/systemd.log 2>/dev/null | tail -5 || sudo journalctl -u thakii-backend -n 50 --no-pager | grep -a '$VIDEO_ID' | tail -5 || echo 'No recent logs'
+          " 2>/dev/null || echo "Could not check logs"
+          
+          if [ $i -lt 30 ]; then
+            echo "   Waiting 10 seconds..."
+            sleep 10
+          fi
+        done
+        
+        echo ""
+        echo "📊 FINAL MONITORING REPORT"
+        echo "========================="
+        echo "Video ID: $VIDEO_ID"
+        echo "Final Status: $STATUS_VALUE"
+        echo "Monitoring Duration: 5 minutes"
+        
+        if [ "$STATUS_VALUE" = "done" ] || [ "$STATUS_VALUE" = "completed" ]; then
+          echo "✅ TEST PASSED - Automatic processing working!"
+          exit 0
+        else
+          echo "❌ TEST FAILED - Video did not complete processing"
+          exit 1
+        fi

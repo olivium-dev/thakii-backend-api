@@ -1,0 +1,39 @@
+name: Fetch Backend Logs
+
+on:
+  workflow_dispatch:
+
+env:
+  SERVER_HOST: thakii-02.fds-1.com
+  SERVER_USER: ec2-user
+
+jobs:
+  fetch_logs:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup Cloudflare Tunnel for SSH
+      run: |
+        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared.deb
+        mkdir -p ~/.ssh
+        echo "${{ secrets.thakii_ssh_private_key }}" > ~/.ssh/thakii-key
+        chmod 600 ~/.ssh/thakii-key
+        
+        echo "Host thakii-server" >> ~/.ssh/config
+        echo "  HostName $SERVER_HOST" >> ~/.ssh/config
+        echo "  User $SERVER_USER" >> ~/.ssh/config
+        echo "  IdentityFile ~/.ssh/thakii-key" >> ~/.ssh/config
+        echo "  ProxyCommand cloudflared access ssh --hostname %h" >> ~/.ssh/config
+        echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+        chmod 600 ~/.ssh/config
+    
+    - name: Fetch Backend Logs
+      run: |
+        echo "📋 Fetching backend service logs..."
+        ssh thakii-server "
+          sudo journalctl -u thakii-backend.service --no-pager -n 200 | grep -E 'TRIGGER_WORKER_PROCESSING|UPLOAD ENDPOINT|Worker Manager initialized|select_available_worker|trigger_with_fallback|d860d117-6b1d-415d-b95b-8cbb57a64f4c' || echo 'No matching logs found'
+        "

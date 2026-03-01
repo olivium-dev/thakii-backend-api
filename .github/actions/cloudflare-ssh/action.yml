@@ -1,0 +1,81 @@
+name: 'Setup Cloudflare SSH'
+description: 'Sets up SSH connection through Cloudflare tunnel'
+inputs:
+  ssh-private-key:
+    description: 'SSH private key for authentication'
+    required: true
+  server-hostname:
+    description: 'Cloudflare tunnel hostname (e.g., thakii-02.fds-1.com)'
+    required: true
+  server-user:
+    description: 'SSH username'
+    required: true
+    default: 'ec2-user'
+  host-alias:
+    description: 'SSH host alias to use in commands'
+    required: true
+  cloudflare-service-token-id:
+    description: 'Cloudflare service token ID (optional)'
+    required: false
+  cloudflare-service-token-secret:
+    description: 'Cloudflare service token secret (optional)'
+    required: false
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install cloudflared
+      run: |
+        echo "📥 Installing cloudflared..."
+        wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared-linux-amd64.deb
+        cloudflared version
+        echo "✅ cloudflared installed"
+      shell: bash
+    
+    - name: Setup SSH Key
+      run: |
+        echo "🔑 Setting up SSH private key..."
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        echo "${{ inputs.ssh-private-key }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        echo "✅ SSH key configured"
+      shell: bash
+    
+    - name: Configure SSH
+      run: |
+        echo "⚙️  Configuring SSH for Cloudflare tunnel..."
+        cat >> ~/.ssh/config << 'EOF'
+        Host ${{ inputs.host-alias }}
+          HostName ${{ inputs.server-hostname }}
+          User ${{ inputs.server-user }}
+          ProxyCommand cloudflared access tcp --hostname ${{ inputs.server-hostname }}
+          IdentityFile ~/.ssh/id_rsa
+          ConnectTimeout 10
+          ServerAliveInterval 60
+          ServerAliveCountMax 3
+          StrictHostKeyChecking no
+          UserKnownHostsFile /dev/null
+        EOF
+        chmod 600 ~/.ssh/config
+        echo "✅ SSH configuration created"
+        echo ""
+        echo "📋 SSH configuration:"
+        cat ~/.ssh/config
+      shell: bash
+    
+    - name: Test SSH connection
+      run: |
+        echo "🔍 Testing SSH connection (10 second timeout)..."
+        echo "Command: ls -la /"
+        echo ""
+        if timeout 10s ssh -v ${{ inputs.host-alias }} "ls -la /" 2>&1; then
+          echo ""
+          echo "🎉 SSH tunnel is working!"
+        else
+          EXIT_CODE=$?
+          echo "❌ SSH connection failed or timed out (exit code: $EXIT_CODE)"
+          exit 1
+        fi
+      shell: bash

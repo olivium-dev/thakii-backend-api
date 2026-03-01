@@ -1,0 +1,110 @@
+name: Setup thakii-03 as Primary Worker
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'setup_thakii03_primary.yml'
+
+env:
+  BACKEND_HOST: thakii-02.fanusdigital.site
+  BACKEND_USER: ec2-user
+  BACKEND_DIR: /home/ec2-user/ThakiiBackend.Api
+
+jobs:
+  setup_primary_worker:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup thakii-03 as Primary Worker
+      env:
+        SSH_PASSWORD: ${{ secrets.thakii_ssh_password }}
+      run: |
+        echo "🚀 Setting up thakii-03 as primary worker via SSH tunnel"
+        
+        # Install dependencies
+        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared.deb
+        sudo apt-get update && sudo apt-get install -y sshpass
+        
+        # SSH to backend and configure thakii-03 as primary
+        sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+          -o ProxyCommand="cloudflared access ssh --hostname $BACKEND_HOST" \
+          $BACKEND_USER@$BACKEND_HOST bash << 'EOF'
+        
+        echo "=== Configuring thakii-03 as primary worker ==="
+        cd $BACKEND_DIR
+        
+        # Update .env file with thakii-03 as primary
+        echo "🔧 Updating worker URLs in .env file..."
+        
+        # Remove old worker URLs
+        sed -i '/PRIMARY_WORKER_URL/d' .env
+        sed -i '/FALLBACK_WORKER_URL/d' .env
+        sed -i '/WORKER_PRIORITY_MODE/d' .env
+        
+        # Add new worker URLs - using internal SSH tunnel approach
+        echo 'PRIMARY_WORKER_URL=http://localhost:8001' >> .env
+        echo 'FALLBACK_WORKER_URL=https://thakii-02.fanusdigital.site/thakii-worker' >> .env
+        echo 'WORKER_PRIORITY_MODE=primary-with-fallback' >> .env
+        
+        echo "✅ Updated .env file:"
+        grep -E 'PRIMARY_WORKER_URL|FALLBACK_WORKER_URL|WORKER_PRIORITY_MODE' .env
+        
+        echo ""
+        echo "=== Setting up SSH tunnel to thakii-03 ==="
+        
+        # Create SSH tunnel service
+        sudo tee /etc/systemd/system/thakii-03-tunnel.service << 'SERVICE_EOF'
+[Unit]
+Description=SSH Tunnel to thakii-03 Worker
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+ExecStart=/usr/bin/ssh -N -L 8001:localhost:8000 -o StrictHostKeyChecking=no -o ServerAliveInterval=60 -o ServerAliveCountMax=3 fanusdigital@ssh-thakii-3.fanusdigital.site
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+SERVICE_EOF
+        
+        echo "✅ Created SSH tunnel service"
+        
+        # Start the tunnel service
+        sudo systemctl daemon-reload
+        sudo systemctl enable thakii-03-tunnel.service
+        sudo systemctl start thakii-03-tunnel.service
+        
+        echo ""
+        echo "=== Checking tunnel status ==="
+        sleep 5
+        sudo systemctl status thakii-03-tunnel.service --no-pager
+        
+        # Test tunnel connectivity
+        echo ""
+        echo "=== Testing tunnel connectivity ==="
+        curl -s http://localhost:8001/health | python3 -m json.tool || echo "Tunnel not ready yet"
+        
+        echo ""
+        echo "=== Restarting backend service ==="
+        sudo systemctl restart thakii-backend.service
+        sleep 5
+        sudo systemctl status thakii-backend.service --no-pager
+        
+        echo ""
+        echo "=== Testing backend health ==="
+        curl -s http://localhost:5000/health | python3 -m json.tool
+        
+        echo "🎉 thakii-03 configured as primary worker!"
+        
+EOF
+        
+        echo "✅ thakii-03 setup as primary worker complete!"

@@ -1,0 +1,48 @@
+name: Check Actual Backend Logs
+
+on:
+  workflow_dispatch:
+
+env:
+  SERVER_HOST: thakii-02.fds-1.com
+  SERVER_USER: ec2-user
+  BACKEND_PATH: /home/ec2-user/ThakiiBackend.Api
+
+jobs:
+  check_logs:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup Cloudflare Tunnel for SSH
+      run: |
+        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared.deb
+        mkdir -p ~/.ssh
+        echo "${{ secrets.thakii_ssh_private_key }}" > ~/.ssh/thakii-key
+        chmod 600 ~/.ssh/thakii-key
+        
+        echo "Host thakii-server" >> ~/.ssh/config
+        echo "  HostName $SERVER_HOST" >> ~/.ssh/config
+        echo "  User $SERVER_USER" >> ~/.ssh/config
+        echo "  IdentityFile ~/.ssh/thakii-key" >> ~/.ssh/config
+        echo "  ProxyCommand cloudflared access ssh --hostname %h" >> ~/.ssh/config
+        echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+        chmod 600 ~/.ssh/config
+    
+    - name: Extract Actual Backend Logs
+      env:
+        BACKEND_PATH: ${{ env.BACKEND_PATH }}
+      run: |
+        echo "📋 Extracting backend logs..."
+        ssh thakii-server "
+          echo '=== Recent backend logs ==='
+          (tail -100 $BACKEND_PATH/systemd.log 2>/dev/null) || sudo journalctl -u thakii-backend -n 100 --no-pager
+          echo ''
+          echo '=== Searching for video d860d117 ==='
+          grep -a 'd860d117' $BACKEND_PATH/systemd.log 2>/dev/null | tail -30 || true
+          echo '=== Searching for TRIGGER / Worker ==='
+          grep -aE 'TRIGGER_WORKER|trigger_with_fallback|Worker' $BACKEND_PATH/systemd.log 2>/dev/null | tail -20 || true
+        "

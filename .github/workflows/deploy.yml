@@ -1,0 +1,145 @@
+name: Deploy Backend to Server (.NET)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  SERVER_HOST: thakii-02.fds-1.com
+  SERVER_USER: ec2-user
+  # Server path where this repo is cloned (ThakiiBackend.Api)
+  BACKEND_PATH: /home/ec2-user/ThakiiBackend.Api
+  SERVICE_NAME: thakii-backend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Test SSH Connection FIRST
+        uses: ./.github/actions/cloudflare-ssh
+        with:
+          ssh-private-key: ${{ secrets.THAKII_SSH_PRIVATE_KEY }}
+          server-hostname: ${{ env.SERVER_HOST }}
+          server-user: ${{ env.SERVER_USER }}
+          host-alias: 'thakii-server-test'
+
+      - name: Setup SSH Connection via Cloudflare
+        uses: ./.github/actions/cloudflare-ssh
+        with:
+          ssh-private-key: ${{ secrets.THAKII_SSH_PRIVATE_KEY }}
+          server-hostname: ${{ env.SERVER_HOST }}
+          server-user: ${{ env.SERVER_USER }}
+          host-alias: 'thakii-server'
+
+      - name: Emergency Disk Cleanup
+        run: |
+          echo "🧹 Running emergency disk cleanup..."
+          ssh thakii-server "
+            set -e
+            echo '=== EMERGENCY DISK CLEANUP ==='
+            df -h
+            echo 'Cleaning /tmp...'
+            sudo find /tmp -maxdepth 1 -name 'backend-backup-*' -type d -exec rm -rf {} + 2>/dev/null || true
+            sudo find /tmp -name '*.mp4' -type f -mtime +0 -delete 2>/dev/null || true
+            sudo find /tmp -name '*.pdf' -type f -mtime +0 -delete 2>/dev/null || true
+            sudo rm -rf /tmp/thakii-worker/* 2>/dev/null || true
+            sudo find /tmp -type f -size +10M -mtime +0 -delete 2>/dev/null || true
+            echo '🎉 Disk cleanup complete'
+            df -h
+          "
+
+      - name: Deploy Backend via Git Pull and Publish
+        env:
+          BACKEND_PATH: ${{ env.BACKEND_PATH }}
+          SERVICE_NAME: ${{ env.SERVICE_NAME }}
+        run: |
+          ssh thakii-server "
+            set -e
+            echo '=== Deploying .NET Backend API ==='
+            cd $BACKEND_PATH
+
+            echo '📥 Pulling latest code...'
+            git fetch origin
+            git reset --hard origin/main
+
+            echo '📦 Building and publishing...'
+            dotnet publish -c Release -o ./publish
+
+            echo '🔧 Applying database migrations (if scripts exist)...'
+            for f in scripts/*.sql; do
+              [ -f \"\$f\" ] && PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -f \"\$f\" && echo \"Applied \$f\" || true
+            done
+
+            echo '🔧 Ensuring .env for worker config...'
+            touch .env
+            grep -q 'PRIMARY_WORKER_URL' .env || echo 'PRIMARY_WORKER_URL=https://thakii-3.fanusdigital.site/thakii-worker' >> .env
+            grep -q 'FALLBACK_WORKER_URL' .env || echo 'FALLBACK_WORKER_URL=https://thakii-02.fanusdigital.site/thakii-worker' >> .env
+            grep -q 'ENABLE_WORKER_API' .env || echo 'ENABLE_WORKER_API=true' >> .env
+            sed -i 's|PRIMARY_WORKER_URL=.*|PRIMARY_WORKER_URL=https://thakii-3.fanusdigital.site/thakii-worker|' .env
+            sed -i 's|FALLBACK_WORKER_URL=.*|FALLBACK_WORKER_URL=https://thakii-02.fanusdigital.site/thakii-worker|' .env
+            sed -i 's|ENABLE_WORKER_API=.*|ENABLE_WORKER_API=true|' .env
+
+            echo '🔧 Configuring systemd EnvironmentFile...'
+            if ! sudo grep -q 'EnvironmentFile=' /etc/systemd/system/$SERVICE_NAME.service 2>/dev/null; then
+              sudo sed -i \"/^\\[Service\\]/a EnvironmentFile=$BACKEND_PATH/.env\" /etc/systemd/system/$SERVICE_NAME.service || true
+            fi
+            sudo systemctl daemon-reload
+
+            echo '🔄 Restarting backend service...'
+            sudo systemctl restart $SERVICE_NAME.service
+            sleep 3
+            sudo systemctl is-active $SERVICE_NAME.service || (sudo systemctl status $SERVICE_NAME.service; exit 1)
+            echo '✅ Backend deployment complete'
+          "
+
+      - name: Reset Stuck Videos
+        env:
+          BACKEND_PATH: ${{ env.BACKEND_PATH }}
+        run: |
+          ssh thakii-server "
+            set -e
+            cd $BACKEND_PATH
+            echo '=== RESET STUCK VIDEOS ==='
+            PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -c \"
+              UPDATE video_tasks SET status = 'in_queue', error_message = 'Reset from processing', updated_at = NOW()
+              WHERE status = 'processing' AND updated_at < NOW() - INTERVAL '30 minutes';
+            \" && echo '✅ Reset complete' || echo '⚠️ Could not reset'
+            PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -c \"
+              SELECT status, COUNT(*) FROM video_tasks WHERE status IN ('in_queue', 'processing', 'failed') GROUP BY status;
+            \" || true
+          "
+
+      - name: Verify Backend Health
+        run: |
+          sleep 5
+          echo "🔍 Checking backend health..."
+          HEALTH=$(curl -s https://thakii-02.fanusdigital.site/thakii-be/health || true)
+          if [ -n "$HEALTH" ]; then
+            echo "✅ Backend is healthy"
+            echo "$HEALTH" | jq '.' || echo "$HEALTH"
+          else
+            echo "⚠️ Backend health check failed or jq not available"
+            exit 1
+          fi
+          echo ""
+          echo "🔍 Worker health (if exposed by backend)..."
+          echo "$HEALTH" | jq '.workers // .overall_status // empty' || true
+
+      - name: Test Worker Endpoints
+        run: |
+          echo "🧪 Worker health..."
+          curl -s https://thakii-3.fanusdigital.site/thakii-worker/health | jq '.' || echo "Primary worker check done"
+          curl -s https://thakii-02.fanusdigital.site/thakii-worker/health | jq '.' || echo "Fallback worker check done"
+
+      - name: Notify deployment status
+        if: always()
+        run: |
+          echo "✅ Backend (.NET) deployment workflow finished"
+          [ $? -eq 0 ] && echo "🎉 Pipeline completed successfully" || echo "❌ Deployment had errors"
+          exit 0

@@ -231,11 +231,16 @@ jobs:
         sleep 5
         
         echo "🔍 Checking backend health..."
-        HEALTH_RESPONSE=$(curl -s https://thakii-02.fanusdigital.site/thakii-be/health)
-        HTTP_CODE=$?
+        HEALTH_RESPONSE=$(curl -s https://thakii-02.fanusdigital.site/thakii-be/health || echo '')
         
-        if [ $HTTP_CODE -eq 0 ] && [ ! -z "$HEALTH_RESPONSE" ]; then
-          echo "✅ Backend is healthy"
+        if [ -z "$HEALTH_RESPONSE" ]; then
+          echo "⚠️ Backend health check returned an empty response"
+          exit 1
+        fi
+        
+        # First, make sure the response is valid JSON before piping to jq
+        if echo "$HEALTH_RESPONSE" | jq '.' >/dev/null 2>&1; then
+          echo "✅ Backend is healthy (valid JSON response)"
           echo "$HEALTH_RESPONSE" | jq '.'
           
           # Extract and verify worker status
@@ -272,7 +277,10 @@ jobs:
             echo "ℹ️ This is normal - workers are managed independently"
           fi
         else
-          echo "⚠️  Backend health check failed"
+          echo "⚠️ Backend health endpoint did not return valid JSON. Raw response:"
+          echo "----------------------------------------"
+          echo "$HEALTH_RESPONSE"
+          echo "----------------------------------------"
           exit 1
         fi
         

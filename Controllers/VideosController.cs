@@ -116,102 +116,25 @@ public class VideosController : ControllerBase
                 await file.CopyToAsync(fs);
             }
 
-            // Detect video duration (in minutes) from the actual file using ffprobe
+            // Detect video duration (in minutes) from the actual file using ffprobe.
+            // TEMP: if detection fails, continue with zero duration and skip credit checks.
             var durationMinutes = GetVideoDurationMinutes(tempPath);
             if (durationMinutes <= 0)
             {
-                _logger.LogWarning("Failed to detect duration for uploaded video {VideoId} (file {FileName}).", videoId, filename);
-                return BadRequest(new { error = "Unable to determine video duration from the uploaded file" });
+                _logger.LogWarning(
+                    "Failed to detect duration for uploaded video {VideoId} (file {FileName}). Temporarily skipping credit checks.",
+                    videoId,
+                    filename);
+                durationMinutes = 0;
             }
 
-            // Calculate required credits based on duration and pricing config
-            var creditsNeeded = _videoPricingService.CalculateCreditsForMinutes(durationMinutes);
+            // TEMP: disable credit calculation and wallet checks for now to unblock uploads.
+            var creditsNeeded = 0;
             var minutesPerCredit = _videoPricingService.GetMinutesPerCredit();
-
-            var holderId = UidToHolderId(CurrentUser.Uid!);
-
-            // Check user wallet balance before accepting upload
-            try
-            {
-                var userWalletHolder = await _walletClient.WalletsAsync(holderId);
-                if (userWalletHolder.WalletHolder == null || userWalletHolder.Wallets == null || !userWalletHolder.Wallets.Any())
-                    return StatusCode(402, new { error = "User wallet not found", required_credits = creditsNeeded });
-
-                var userCreditWallet = userWalletHolder.Wallets.FirstOrDefault(w => w.CurrencyID == 1);
-                if (userCreditWallet == null)
-                    return StatusCode(402, new { error = "User credit wallet not found", required_credits = creditsNeeded });
-
-                var userBalance = (decimal)userCreditWallet.Amount;
-                var requiredCreditsDecimal = (decimal)creditsNeeded;
-
-                if (userBalance < requiredCreditsDecimal)
-                {
-                    return StatusCode(402, new
-                    {
-                        error = "Insufficient credits for this video upload",
-                        duration_minutes = durationMinutes,
-                        minutes_per_credit = minutesPerCredit,
-                        required_credits = creditsNeeded,
-                        available_credits = userBalance
-                    });
-                }
-            }
-            catch (ApiException ex)
-            {
-                _logger.LogError(ex, "Wallet API error while checking credits for upload for user {UserId}", CurrentUser.Uid);
-                return StatusCode(ex.StatusCode, new { error = "Wallet API error while checking credits", details = ex.Message });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Unexpected error while checking credits for upload for user {UserId}", CurrentUser.Uid);
-                return StatusCode(500, new { error = "Unexpected error while checking credits", details = ex.Message });
-            }
 
             await using var uploadStream = System.IO.File.OpenRead(tempPath);
             var s3Key = await _s3.UploadVideoAsync(uploadStream, videoId, filename);
             await _db.CreateVideoTaskAsync(videoId, filename, CurrentUser.Uid!, CurrentUser.Email!, "in_queue", s3Key);
-
-            // Deduct credits after successful upload: user credit wallet -> system wallet
-            try
-            {
-                var userWalletHolder = await _walletClient.WalletsAsync(holderId);
-                var userCreditWallet = userWalletHolder.Wallets?.FirstOrDefault(w => w.CurrencyID == 1);
-                var systemWallet = await _walletClient.SystemWalletAsync();
-                var systemCreditWalletId = systemWallet.Wallets?.FirstOrDefault(w => w.Type == "__SYSTEM__")?.WalletId;
-
-                if (userCreditWallet != null && systemCreditWalletId != null && creditsNeeded > 0)
-                {
-                    var transaction = new TransactionRequest
-                    {
-                        ServiceName = "ThakiiVideoService",
-                        Tag = $"VideoUpload-{videoId}",
-                        Notes = $"Credit deduction for video upload {videoId}, duration {durationMinutes} minutes",
-                        Transactions = new List<TransactionDetailsRequest>
-                        {
-                            new TransactionDetailsRequest
-                            {
-                                SourceWalletId = userCreditWallet.WalletId,
-                                DestinationWalletId = (Guid)systemCreditWalletId,
-                                Amount = (double)creditsNeeded
-                            }
-                        }
-                    };
-                    var txResult = await _walletClient.InitiateAsync(transaction);
-                    await _walletClient.ExecuteAsync(txResult.TransactionHeader.TxId);
-                    _logger.LogInformation("Deducted {Credits} credits for upload {VideoId}. TxId={TxId}", creditsNeeded, videoId, txResult.TransactionHeader.TxId);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to deduct credits after upload {VideoId}. Video and task were created; consider manual adjustment.", videoId);
-                return StatusCode(500, new
-                {
-                    error = "Upload succeeded but credit deduction failed",
-                    video_id = videoId,
-                    details = ex.Message,
-                    required_credits = creditsNeeded
-                });
-            }
 
             await TriggerWorkerAfterUploadAsync(videoId, CurrentUser.Uid!, filename, s3Key);
 

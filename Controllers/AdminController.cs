@@ -133,7 +133,8 @@ public class AdminController : ControllerBase
                 await _s3.DeleteFileAsync(subtitleKey);
                 s3Deletions.Add($"subtitle: {subtitleKey}");
 
-                var pdfKey = $"pdfs/{videoId}/{videoId}.pdf";
+                // Match Python admin delete: flat PDF path pdfs/{video_id}.pdf
+                var pdfKey = $"pdfs/{videoId}.pdf";
                 await _s3.DeleteFileAsync(pdfKey);
                 s3Deletions.Add($"pdf: {pdfKey}");
             }

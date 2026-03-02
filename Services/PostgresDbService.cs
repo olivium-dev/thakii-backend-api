@@ -113,7 +113,7 @@ public class PostgresDbService : IPostgresDbService
         var list = new List<Dictionary<string, object?>>();
         await using var conn = new NpgsqlConnection(_connectionString);
         await conn.OpenAsync();
-        await using var cmd = new NpgsqlCommand("SELECT * FROM video_tasks ORDER BY created_at DESC", conn);
+        await using var cmd = new NpgsqlCommand("SELECT * FROM video_tasks WHERE (cancelled IS NULL OR cancelled = FALSE) ORDER BY created_at DESC", conn);
         await using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())
             list.Add(ToDict(reader));
@@ -125,7 +125,7 @@ public class PostgresDbService : IPostgresDbService
         var list = new List<Dictionary<string, object?>>();
         await using var conn = new NpgsqlConnection(_connectionString);
         await conn.OpenAsync();
-        await using var cmd = new NpgsqlCommand("SELECT * FROM video_tasks WHERE user_id = @userId ORDER BY created_at DESC", conn);
+        await using var cmd = new NpgsqlCommand("SELECT * FROM video_tasks WHERE user_id = @userId AND (cancelled IS NULL OR cancelled = FALSE) ORDER BY created_at DESC", conn);
         cmd.Parameters.AddWithValue("userId", userId);
         await using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync())

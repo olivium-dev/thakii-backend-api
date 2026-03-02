@@ -448,6 +448,17 @@ public class VideosController : ControllerBase
 
             _logger.LogInformation("File assembled: {Size} bytes", totalSize);
 
+            // Duration only (credits check/deduction temporarily disabled for chunk API debugging)
+            var durationMinutes = GetVideoDurationMinutes(assembledPath);
+            if (durationMinutes <= 0)
+            {
+                try { System.IO.File.Delete(assembledPath); } catch { /* ignore */ }
+                return BadRequest(new { error = "Unable to determine video duration from the assembled file" });
+            }
+
+            var creditsNeeded = _videoPricingService.CalculateCreditsForMinutes(durationMinutes);
+            _logger.LogInformation("Assemble-file: duration={DurationMin} min, credits would be {Credits} (check/deduction disabled for debugging)", durationMinutes, creditsNeeded);
+
             // Upload to S3
             string s3Key;
             await using (var fileStream = System.IO.File.OpenRead(assembledPath))
@@ -457,6 +468,8 @@ public class VideosController : ControllerBase
 
             // Create task in DB (match Python: do not store s3_key for assembled files)
             await _db.CreateVideoTaskAsync(videoId, request.OriginalFilename, CurrentUser.Uid!, CurrentUser.Email!, "in_queue", s3Key: null);
+
+            // Credit deduction temporarily disabled for chunk API debugging
 
             await TriggerWorkerAfterUploadAsync(videoId, CurrentUser.Uid!, request.OriginalFilename, s3Key);
 
@@ -476,6 +489,8 @@ public class VideosController : ControllerBase
             return Ok(new
             {
                 video_id = videoId,
+                duration_minutes = durationMinutes,
+                credits_deducted = 0, // temporarily disabled for chunk API debugging
                 message = "File assembled and queued for processing",
                 s3_key = s3Key,
                 total_size = totalSize
@@ -801,7 +816,8 @@ public class VideosController : ControllerBase
             }
             if (!videoOnly)
             {
-                var pdfKey = $"pdfs/{videoId}/{videoId}.pdf";
+                // Match Python backend cleanup: flat PDF path pdfs/{video_id}.pdf
+                var pdfKey = $"pdfs/{videoId}.pdf";
                 await _s3.DeleteFileAsync(pdfKey);
             }
         }

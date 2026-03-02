@@ -4,6 +4,7 @@ using ThakiiBackend.Api.Middleware;
 using ThakiiBackend.Api.Hubs;
 using thakii.service.ServiceWallet;
 using thakii.service.ServiceCatalog;
+using thakii.service.ServiceInAppPurchase;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -59,6 +60,17 @@ builder.Services.AddHttpClient<ServiceCatalogClient>()
         var config = sp.GetRequiredService<IConfiguration>();
         var baseUrl = config["CatalogService:BaseUrl"] ?? Environment.GetEnvironmentVariable("CATALOG_SERVICE_URL") ?? "https://localhost:7002/";
         return new ServiceCatalogClient(baseUrl, httpClient);
+    });
+
+// In-app purchase service client
+builder.Services.AddHttpClient<ServiceInAppPurchaseClient>()
+    .AddTypedClient((httpClient, sp) =>
+    {
+        var config = sp.GetRequiredService<IConfiguration>();
+        var baseUrl = config["ServiceInAppPurchase:BaseUrl"]
+                      ?? Environment.GetEnvironmentVariable("IN_APP_PURCHASE_SERVICE_URL")
+                      ?? "https://localhost:7003/";
+        return new ServiceInAppPurchaseClient(baseUrl, httpClient);
     });
 
 // Controllers - use snake_case to match Python API contract

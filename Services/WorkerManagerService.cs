@@ -16,7 +16,10 @@ public class WorkerManagerService : IWorkerManagerService
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
-        _primaryWorkerUrl = config["Worker:ServiceUrl"] ?? "https://thakii-02.fanusdigital.site/thakii-worker";
+        // Env override for local dev when primary worker host (e.g. thakii-03) is not resolvable
+        _primaryWorkerUrl = Environment.GetEnvironmentVariable("WORKER_SERVICE_URL")
+            ?? config["Worker:ServiceUrl"]
+            ?? "https://thakii-02.fanusdigital.site/thakii-worker";
     }
 
     public Dictionary<string, object?> GetAllWorkersHealth()
@@ -57,7 +60,8 @@ public class WorkerManagerService : IWorkerManagerService
             client.Timeout = TimeSpan.FromSeconds(10);
             var json = System.Text.Json.JsonSerializer.Serialize(payload);
             var content = new System.Net.Http.StringContent(json, System.Text.Encoding.UTF8, "application/json");
-            var response = client.PostAsync($"{_primaryWorkerUrl.TrimEnd('/')}/process", content).Result;
+            // Worker API expects /process-from-s3 (same as Python backend)
+            var response = client.PostAsync($"{_primaryWorkerUrl.TrimEnd('/')}/process-from-s3", content).Result;
 
             return new Dictionary<string, object?>
             {

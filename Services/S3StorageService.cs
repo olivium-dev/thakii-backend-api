@@ -1,7 +1,9 @@
 using System.IO;
+using System.Diagnostics;
 using Amazon;
 using Amazon.S3;
 using Amazon.S3.Model;
+using Amazon.S3.Transfer;
 
 namespace ThakiiBackend.Api.Services;
 
@@ -22,8 +24,9 @@ public class S3StorageService : IS3StorageService
     {
         _logger = logger;
 
-        var region = config["AWS:Region"] ?? Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ?? "us-east-2";
-        _bucketName = config["AWS:S3Bucket"] ?? Environment.GetEnvironmentVariable("S3_BUCKET_NAME") ?? "thakii-video-storage-1753883631";
+        // Match Python backend: prefer environment variables, then config, then defaults
+        var region = Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") ?? config["AWS:Region"] ?? "us-east-2";
+        _bucketName = Environment.GetEnvironmentVariable("S3_BUCKET_NAME") ?? config["AWS:S3Bucket"] ?? "thakii-video-storage-1753883631";
 
         // Use default credential chain: env vars (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY), profile, or instance role
         var regionEndpoint = RegionEndpoint.GetBySystemName(region);
@@ -37,16 +40,67 @@ public class S3StorageService : IS3StorageService
         var safeFileName = Path.GetFileName(filename) ?? filename;
         var videoKey = $"videos/{videoId}/{safeFileName}";
 
-        var request = new PutObjectRequest
-        {
-            BucketName = _bucketName,
-            Key = videoKey,
-            InputStream = fileStream,
-            ContentType = "video/mp4"
-        };
+            var totalBytes = fileStream.CanSeek ? fileStream.Length : -1;
 
-        await _s3Client.PutObjectAsync(request);
-        _logger.LogInformation("Uploaded video {VideoId} to S3: {Key}", videoId, videoKey);
+            _logger.LogInformation(
+                "S3 upload starting. video_id={VideoId}, key={Key}, size_bytes={SizeBytes}",
+                videoId,
+                videoKey,
+                totalBytes
+            );
+
+            var stopwatch = Stopwatch.StartNew();
+
+            var transferUtility = new TransferUtility(_s3Client);
+            var uploadRequest = new TransferUtilityUploadRequest
+            {
+                BucketName = _bucketName,
+                Key = videoKey,
+                InputStream = fileStream,
+                ContentType = "video/mp4"
+            };
+
+            if (totalBytes > 0)
+            {
+                uploadRequest.UploadProgressEvent += (_, e) =>
+                {
+                    if (e.TransferredBytes == 0) return;
+
+                    var elapsedSeconds = Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001);
+                    var bytesPerSecond = e.TransferredBytes / elapsedSeconds;
+
+                    double etaSeconds = 0;
+                    if (bytesPerSecond > 0 && totalBytes > 0)
+                    {
+                        var remainingBytes = totalBytes - e.TransferredBytes;
+                        etaSeconds = remainingBytes > 0 ? remainingBytes / bytesPerSecond : 0;
+                    }
+
+                    _logger.LogInformation(
+                        "S3 upload progress. video_id={VideoId}, key={Key}, percent={Percent}%, transferred={TransferredBytes}/{TotalBytes} bytes, elapsed_s={Elapsed:F1}, est_remaining_s={Remaining:F1}",
+                        videoId,
+                        videoKey,
+                        e.PercentDone,
+                        e.TransferredBytes,
+                        totalBytes,
+                        elapsedSeconds,
+                        etaSeconds
+                    );
+                };
+            }
+
+            await transferUtility.UploadAsync(uploadRequest);
+
+            stopwatch.Stop();
+
+            _logger.LogInformation(
+                "S3 upload completed. video_id={VideoId}, key={Key}, size_bytes={SizeBytes}, elapsed_s={Elapsed:F1}",
+                videoId,
+                videoKey,
+                totalBytes,
+                stopwatch.Elapsed.TotalSeconds
+            );
+
         return videoKey;
     }
 

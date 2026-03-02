@@ -1,16 +1,22 @@
 using Microsoft.AspNetCore.SignalR;
 using ThakiiBackend.Api.Hubs;
+using ThakiiBackend.Api.Middleware.SocketIo;
 
 namespace ThakiiBackend.Api.Services;
 
 public class TaskUpdateHubService : ITaskUpdateHubService
 {
     private readonly IHubContext<TaskUpdateHub> _hubContext;
+    private readonly SocketIoServer _socketIoServer;
     private readonly ILogger<TaskUpdateHubService> _logger;
 
-    public TaskUpdateHubService(IHubContext<TaskUpdateHub> hubContext, ILogger<TaskUpdateHubService> logger)
+    public TaskUpdateHubService(
+        IHubContext<TaskUpdateHub> hubContext,
+        SocketIoServer socketIoServer,
+        ILogger<TaskUpdateHubService> logger)
     {
         _hubContext = hubContext;
+        _socketIoServer = socketIoServer;
         _logger = logger;
     }
 
@@ -21,6 +27,7 @@ public class TaskUpdateHubService : ITaskUpdateHubService
         try
         {
             await _hubContext.Clients.Group(room).SendAsync(TaskUpdateHub.TaskUpdateEvent, taskData, cancellationToken);
+            _socketIoServer.EmitToRoom(room, "task_update", taskData);
             _logger.LogDebug("Task update sent to room {Room}", room);
         }
         catch (Exception ex)

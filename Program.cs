@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Http.Features;
 using ThakiiBackend.Api.Services;
 using ThakiiBackend.Api.Middleware;
+using ThakiiBackend.Api.Middleware.SocketIo;
 using ThakiiBackend.Api.Hubs;
 using thakii.service.ServiceWallet;
 using thakii.service.ServiceCatalog;
@@ -33,6 +34,7 @@ builder.Services.AddSingleton<IWorkerManagerService, WorkerManagerService>();
 builder.Services.AddSingleton<IBatchImportService, BatchImportService>();
 builder.Services.AddSingleton<ITaskUpdateHubService, TaskUpdateHubService>();
 
+builder.Services.AddSingleton<SocketIoServer>();
 builder.Services.AddSignalR();
 
 // Allow unlimited request body size for uploads (rely on external limits / infra)
@@ -98,6 +100,7 @@ builder.Services.AddSwaggerGen();
 var app = builder.Build();
 
 app.UseCors();
+app.UseMiddleware<SocketIoMiddleware>();
 app.UseAuthMiddleware();
 app.MapControllers();
 app.MapHub<TaskUpdateHub>("/hubs/task-update");

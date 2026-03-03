@@ -371,12 +371,14 @@ public class VideosController : ControllerBase
 
             _logger.LogInformation("File assembled: {Size} bytes", totalSize);
 
-            // Duration only (credits check/deduction temporarily disabled for chunk API debugging)
+            // Match Python: no blocking duration check. If ffprobe is available, log duration; otherwise continue.
             var durationMinutes = GetVideoDurationMinutes(assembledPath);
             if (durationMinutes <= 0)
             {
-                try { System.IO.File.Delete(assembledPath); } catch { /* ignore */ }
-                return BadRequest(new { error = "Unable to determine video duration from the assembled file" });
+                _logger.LogWarning(
+                    "Failed to detect duration for assembled video {VideoId} (file {FileName}). Continuing without duration.",
+                    videoId, request.OriginalFilename);
+                durationMinutes = 0;
             }
 
             var creditsNeeded = _videoPricingService.CalculateCreditsForMinutes(durationMinutes);
@@ -389,8 +391,7 @@ public class VideosController : ControllerBase
                 s3Key = await _s3.UploadVideoAsync(fileStream, videoId, request.OriginalFilename);
             }
 
-            // Create task in DB (match Python: do not store s3_key for assembled files)
-            await _db.CreateVideoTaskAsync(videoId, request.OriginalFilename, CurrentUser.Uid!, CurrentUser.Email!, "in_queue", s3Key: null);
+            await _db.CreateVideoTaskAsync(videoId, request.OriginalFilename, CurrentUser.Uid!, CurrentUser.Email!, "in_queue", s3Key);
 
             // Credit deduction temporarily disabled for chunk API debugging
 

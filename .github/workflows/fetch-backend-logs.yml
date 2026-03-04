@@ -31,9 +31,31 @@ jobs:
         echo "  StrictHostKeyChecking no" >> ~/.ssh/config
         chmod 600 ~/.ssh/config
     
+    - name: Check Batch Import and Video Status
+      run: |
+        echo "📋 Checking batch import jobs..."
+        ssh thakii-server "
+          PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -c \"
+            SELECT job_id, status, total_videos, processed_videos, failed_videos, share_url, created_at 
+            FROM batch_import_jobs 
+            ORDER BY created_at DESC 
+            LIMIT 5;
+          \"
+          echo ''
+          echo '📋 Video tasks status summary:'
+          PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -c \"
+            SELECT status, COUNT(*) FROM video_tasks GROUP BY status ORDER BY status;
+          \"
+          echo ''
+          echo '📋 Recent video tasks:'
+          PGPASSWORD=P@ssw0rd768_DB psql -h localhost -U thakii_user -d thakii_production -c \"
+            SELECT video_id, filename, status, created_at FROM video_tasks ORDER BY created_at DESC LIMIT 10;
+          \"
+        "
+    
     - name: Fetch Backend Logs
       run: |
         echo "📋 Fetching backend service logs..."
         ssh thakii-server "
-          sudo journalctl -u thakii-backend.service --no-pager -n 200 | grep -E 'TRIGGER_WORKER_PROCESSING|UPLOAD ENDPOINT|Worker Manager initialized|select_available_worker|trigger_with_fallback|d860d117-6b1d-415d-b95b-8cbb57a64f4c' || echo 'No matching logs found'
+          sudo journalctl -u thakii-backend.service --no-pager -n 100 | grep -iE 'batch|import|worker|error|trigger' | tail -50 || echo 'No matching logs found'
         "

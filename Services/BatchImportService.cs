@@ -14,14 +14,22 @@ public class BatchImportService : IBatchImportService
     private readonly string _connectionString;
     private readonly IS3StorageService _s3;
     private readonly IPostgresDbService _db;
+    private readonly IWorkerManagerService _workerManager;
+    private readonly IConfiguration _config;
     private readonly ILogger<BatchImportService> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
 
+    private bool IsWorkerApiEnabled =>
+        (Environment.GetEnvironmentVariable("ENABLE_WORKER_API") ?? _config["Worker:EnableWorkerApi"] ?? "false")
+        .Equals("true", StringComparison.OrdinalIgnoreCase);
+
     public BatchImportService(IConfiguration config, IS3StorageService s3, IPostgresDbService db,
-        ILogger<BatchImportService> logger, IHttpClientFactory httpClientFactory)
+        IWorkerManagerService workerManager, ILogger<BatchImportService> logger, IHttpClientFactory httpClientFactory)
     {
         _s3 = s3;
         _db = db;
+        _workerManager = workerManager;
+        _config = config;
         _logger = logger;
         _httpClientFactory = httpClientFactory;
 
@@ -374,6 +382,9 @@ public class BatchImportService : IBatchImportService
                     // Create task
                     await _db.CreateVideoTaskAsync(videoId, video.Name, userId, userEmail, "in_queue", s3Key);
 
+                    // Trigger worker to process the video (when Worker API is disabled)
+                    await TriggerWorkerAfterUploadAsync(videoId, userId, video.Name, s3Key);
+
                     // Update batch video record
                     await using (var cmd = new NpgsqlCommand(@"
                         UPDATE batch_import_videos
@@ -463,5 +474,42 @@ public class BatchImportService : IBatchImportService
             return $"{baseUrl}/public.php/webdav/{Uri.EscapeDataString(filename)}";
         }
         return shareUrl;
+    }
+
+    /// <summary>
+    /// Trigger worker via HTTP when Worker API is disabled; otherwise workers poll for tasks.
+    /// </summary>
+    private async Task TriggerWorkerAfterUploadAsync(string videoId, string userId, string filename, string s3Key)
+    {
+        if (IsWorkerApiEnabled)
+        {
+            _logger.LogInformation("Worker API enabled - batch task queued for API pickup: {VideoId}", videoId);
+            return;
+        }
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["video_id"] = videoId,
+            ["user_id"] = userId,
+            ["filename"] = filename,
+            ["s3_key"] = s3Key
+        };
+
+        var result = _workerManager.TriggerWithFallback(payload);
+        var success = result.TryGetValue("success", out var ok) && ok is true;
+
+        if (success)
+        {
+            _logger.LogInformation("Worker triggered successfully for batch video {VideoId}", videoId);
+        }
+        else
+        {
+            _logger.LogWarning("Worker trigger failed for batch video {VideoId}: {Error}", videoId, result.GetValueOrDefault("error"));
+            await _db.UpdateVideoTaskAsync(videoId, new Dictionary<string, object?>
+            {
+                ["status"] = "failed",
+                ["error_message"] = result.GetValueOrDefault("error")?.ToString() ?? "Worker service unavailable"
+            });
+        }
     }
 }

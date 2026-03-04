@@ -213,22 +213,40 @@ public class BatchImportService : IBatchImportService
 
         try
         {
+            // Extract share token for authentication
+            var shareToken = ExtractShareToken(shareUrl);
+            if (string.IsNullOrEmpty(shareToken))
+            {
+                _logger.LogWarning("Could not extract share token from URL: {ShareUrl}", shareUrl);
+                return videos;
+            }
+
             // Convert share URL to WebDAV PROPFIND URL
             var webdavUrl = ConvertToWebDavUrl(shareUrl);
 
             using var client = _httpClientFactory.CreateClient();
-            client.Timeout = TimeSpan.FromSeconds(30);
+            client.Timeout = TimeSpan.FromSeconds(60);
 
             var request = new HttpRequestMessage(new HttpMethod("PROPFIND"), webdavUrl);
             request.Headers.Add("Depth", "1");
+            
+            // Add Basic Authentication with share token as username and empty password
+            var authBytes = System.Text.Encoding.ASCII.GetBytes($"{shareToken}:");
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+                "Basic", Convert.ToBase64String(authBytes));
+            
             request.Content = new StringContent(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:getcontentlength/><d:displayname/><d:getcontenttype/></d:prop></d:propfind>",
                 System.Text.Encoding.UTF8, "application/xml");
 
+            _logger.LogInformation("Listing videos from WebDAV: {Url} with token: {Token}", webdavUrl, shareToken);
+
             var response = await client.SendAsync(request);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("WebDAV PROPFIND failed with status {StatusCode} for {Url}", response.StatusCode, webdavUrl);
+                var errorBody = await response.Content.ReadAsStringAsync();
+                _logger.LogWarning("WebDAV PROPFIND failed with status {StatusCode} for {Url}. Response: {Response}", 
+                    response.StatusCode, webdavUrl, errorBody.Length > 500 ? errorBody[..500] : errorBody);
                 return videos;
             }
 
@@ -259,6 +277,8 @@ public class BatchImportService : IBatchImportService
                     }
                 }
             }
+            
+            _logger.LogInformation("Found {Count} video files in share", videos.Count);
         }
         catch (Exception ex)
         {
@@ -266,6 +286,22 @@ public class BatchImportService : IBatchImportService
         }
 
         return videos;
+    }
+
+    private static string? ExtractShareToken(string shareUrl)
+    {
+        // Extract share token from URL like https://fanusdigital.wolkesicher.de/s/XTNmCZ4Cd5RBg74
+        if (shareUrl.Contains("/s/"))
+        {
+            var parts = shareUrl.Split("/s/");
+            if (parts.Length > 1)
+            {
+                // Remove any path or query parameters after the token
+                var token = parts[1].Split('/')[0].Split('?')[0];
+                return token;
+            }
+        }
+        return null;
     }
 
     private static string ConvertToWebDavUrl(string shareUrl)
@@ -287,6 +323,14 @@ public class BatchImportService : IBatchImportService
     {
         try
         {
+            // Extract share token for authentication
+            var shareToken = ExtractShareToken(shareUrl);
+            if (string.IsNullOrEmpty(shareToken))
+            {
+                _logger.LogError("Could not extract share token from URL for batch job {JobId}", jobId);
+                throw new Exception("Invalid share URL - could not extract token");
+            }
+
             await using var conn = new NpgsqlConnection(_connectionString);
             await conn.OpenAsync();
 
@@ -307,11 +351,21 @@ public class BatchImportService : IBatchImportService
                 {
                     var videoId = Guid.NewGuid().ToString();
 
-                    // Download and upload video
+                    // Download and upload video with authentication
                     var downloadUrl = ConvertShareToDownloadUrl(shareUrl, video.Name);
+                    
                     using var client = _httpClientFactory.CreateClient();
                     client.Timeout = TimeSpan.FromMinutes(30);
-                    var response = await client.GetAsync(downloadUrl);
+                    
+                    // Create request with Basic Authentication
+                    var request = new HttpRequestMessage(HttpMethod.Get, downloadUrl);
+                    var authBytes = System.Text.Encoding.ASCII.GetBytes($"{shareToken}:");
+                    request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+                        "Basic", Convert.ToBase64String(authBytes));
+                    
+                    _logger.LogInformation("Downloading video: {Name} from {Url}", video.Name, downloadUrl);
+                    
+                    var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
                     response.EnsureSuccessStatusCode();
 
                     await using var stream = await response.Content.ReadAsStreamAsync();

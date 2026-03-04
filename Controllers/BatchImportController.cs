@@ -36,6 +36,14 @@ public class BatchImportController : ControllerBase
         if (request == null || string.IsNullOrEmpty(request.ShareUrl))
             return BadRequest(new { error = "share_url is required" });
 
+        // Validate URL format
+        if (!request.ShareUrl.StartsWith("http://") && !request.ShareUrl.StartsWith("https://"))
+            return BadRequest(new { error = "Invalid share URL format. Must start with http:// or https://" });
+
+        // Validate that URL contains share token pattern
+        if (!request.ShareUrl.Contains("/s/"))
+            return BadRequest(new { error = "Invalid share URL format. Expected Nextcloud share URL with /s/ pattern" });
+
         try
         {
             _logger.LogInformation("Batch import request from {Email}, Share URL: {ShareUrl}", CurrentUser.Email, request.ShareUrl);
@@ -44,13 +52,15 @@ public class BatchImportController : ControllerBase
 
             if (jobResult == null)
             {
+                _logger.LogWarning("Batch import failed for {Email} - no videos found or access denied", CurrentUser.Email);
                 return BadRequest(new
                 {
-                    error = "Failed to create batch import job. Please check the share URL and try again."
+                    error = "Failed to create batch import job. No video files found in the share or access denied. Please check that the share URL is correct and contains video files."
                 });
             }
 
-            _logger.LogInformation("Created batch job: {JobId}", jobResult.GetValueOrDefault("job_id"));
+            _logger.LogInformation("Created batch job: {JobId} with {TotalVideos} videos", 
+                jobResult.GetValueOrDefault("job_id"), jobResult.GetValueOrDefault("total_videos"));
 
             return Ok(new
             {
@@ -62,8 +72,8 @@ public class BatchImportController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error in submit_batch_import");
-            return StatusCode(500, new { error = "Internal server error" });
+            _logger.LogError(ex, "Error in submit_batch_import for {Email}", CurrentUser.Email);
+            return StatusCode(500, new { error = $"Internal server error: {ex.Message}" });
         }
     }
 

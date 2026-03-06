@@ -24,6 +24,8 @@ builder.Services.AddSingleton<IS3StorageService, S3StorageService>();
 builder.Services.AddSingleton<ICustomTokenService, CustomTokenService>();
 builder.Services.AddSingleton<IVideoPricingService, VideoPricingService>();
 builder.Services.AddSingleton<IVideoCatalogService, VideoCatalogService>();
+builder.Services.AddSingleton<IVideoCreditRefundService, VideoCreditRefundService>();
+builder.Services.AddSingleton<IRemoteVideoDurationService, RemoteVideoDurationService>();
 
 // New services for missing endpoints
 builder.Services.AddSingleton<IServerManagerService, ServerManagerService>();

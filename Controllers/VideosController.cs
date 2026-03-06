@@ -19,6 +19,8 @@ public class VideosController : ControllerBase
     private readonly IVideoCatalogService _videoCatalogService;
     private readonly IWorkerManagerService _workerManager;
     private readonly ITaskUpdateHubService _taskUpdateHub;
+    private readonly IVideoCreditRefundService _creditRefundService;
+    private readonly IRemoteVideoDurationService _remoteDurationService;
     private readonly IConfiguration _config;
     private readonly ILogger<VideosController> _logger;
 
@@ -31,6 +33,8 @@ public class VideosController : ControllerBase
         IVideoCatalogService videoCatalogService,
         IWorkerManagerService workerManager,
         ITaskUpdateHubService taskUpdateHub,
+        IVideoCreditRefundService creditRefundService,
+        IRemoteVideoDurationService remoteDurationService,
         IConfiguration config,
         ILogger<VideosController> logger)
     {
@@ -42,6 +46,8 @@ public class VideosController : ControllerBase
         _videoCatalogService = videoCatalogService;
         _workerManager = workerManager;
         _taskUpdateHub = taskUpdateHub;
+        _creditRefundService = creditRefundService;
+        _remoteDurationService = remoteDurationService;
         _config = config;
         _logger = logger;
     }
@@ -74,10 +80,19 @@ public class VideosController : ControllerBase
         else
         {
             _logger.LogWarning("Worker trigger failed for {VideoId}: {Error}", videoId, result.GetValueOrDefault("error"));
+            var errorMsg = result.GetValueOrDefault("error")?.ToString() ?? "Worker service unavailable";
+            try
+            {
+                await _creditRefundService.RefundCreditsForVideoAsync(videoId, errorMsg);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Refund failed after worker trigger failure for {VideoId}", videoId);
+            }
             await _db.UpdateVideoTaskAsync(videoId, new Dictionary<string, object?>
             {
                 ["status"] = "failed",
-                ["error_message"] = result.GetValueOrDefault("error")?.ToString() ?? "Worker service unavailable"
+                ["error_message"] = errorMsg
             });
         }
     }
@@ -94,6 +109,113 @@ public class VideosController : ControllerBase
         return new Guid(hash);
     }
 
+    /// <summary>
+    /// Read-only balance pre-check. Call BEFORE S3 upload to fail fast when
+    /// the user clearly cannot afford the upload. No money moves here.
+    /// </summary>
+    private async Task<(bool CanAfford, decimal CreditsRequired, string? Error, decimal? RequiredCredits, decimal? AvailableCredits)>
+        PreCheckUploadCreditsAsync(string userId, double durationMinutes)
+    {
+        var creditsRequired = _videoPricingService.CalculateCreditsForMinutes(durationMinutes);
+        if (creditsRequired <= 0m)
+            return (true, 0, null, null, null);
+
+        var holderId = UidToHolderId(userId);
+        try
+        {
+            var holder = await _walletClient.WalletsAsync(holderId);
+            if (holder.WalletHolder == null || holder.Wallets == null || !holder.Wallets.Any())
+                return (false, creditsRequired, "User wallet not found", (decimal)creditsRequired, null);
+
+            var creditWallet = holder.Wallets.FirstOrDefault(w => w.CurrencyID == 1);
+            if (creditWallet == null)
+                return (false, creditsRequired, "User credit wallet not found", (decimal)creditsRequired, null);
+
+            _logger.LogInformation("Credit pre-check: userId={UserId}, holderId={HolderId}, creditWalletId={WalletId}, balance={Balance}, required={Required}",
+                userId, holderId, creditWallet.WalletId, creditWallet.Amount, creditsRequired.ToString("0.0"));
+
+            var balance = (decimal)creditWallet.Amount;
+            if (balance < creditsRequired)
+                return (false, creditsRequired, "Insufficient credits to upload this video", creditsRequired, balance);
+
+            return (true, creditsRequired, null, creditsRequired, balance);
+        }
+        catch (ApiException ex)
+        {
+            _logger.LogError(ex, "Wallet API error during credit pre-check for user {UserId}", userId);
+            return (false, creditsRequired, "Wallet service temporarily unavailable", creditsRequired, null);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected error during credit pre-check for user {UserId}", userId);
+            return (false, creditsRequired, "Failed to verify credit balance", creditsRequired, null);
+        }
+    }
+
+    /// <summary>
+    /// Execute credit deduction via wallet transaction. Call AFTER S3 upload
+    /// succeeds so users never lose credits for failed uploads.
+    /// </summary>
+    private async Task<(bool Success, decimal CreditsDeducted, string? Error, decimal? RequiredCredits, decimal? AvailableCredits)>
+        DeductCreditsForUploadAsync(string userId, string videoId, decimal creditsToDeduct, string? notes)
+    {
+        if (creditsToDeduct <= 0m)
+            return (true, 0, null, null, null);
+
+        var holderId = UidToHolderId(userId);
+        try
+        {
+            var holder = await _walletClient.WalletsAsync(holderId);
+            if (holder.WalletHolder == null || holder.Wallets == null || !holder.Wallets.Any())
+                return (false, 0, "User wallet not found", (decimal)creditsToDeduct, null);
+
+            var creditWallet = holder.Wallets.FirstOrDefault(w => w.CurrencyID == 1);
+            if (creditWallet == null)
+                return (false, 0, "User credit wallet not found", (decimal)creditsToDeduct, null);
+
+            var balance = (decimal)creditWallet.Amount;
+            if (balance < creditsToDeduct)
+                return (false, 0, "Insufficient credits to upload this video", creditsToDeduct, balance);
+
+            var systemWallet = await _walletClient.SystemWalletAsync();
+            var systemCreditWalletId = systemWallet.Wallets?.FirstOrDefault(w => w.Type == "__SYSTEM__")?.WalletId;
+            if (systemCreditWalletId == null)
+                return (false, 0, "System wallet not found", (decimal)creditsToDeduct, balance);
+
+            var transaction = new TransactionRequest
+            {
+                ServiceName = "ThakiiVideoService",
+                Tag = $"VideoUpload-{videoId}",
+                Notes = notes ?? $"Upload video {videoId}",
+                Transactions = new List<TransactionDetailsRequest>
+                {
+                    new TransactionDetailsRequest
+                    {
+                        SourceWalletId = creditWallet.WalletId,
+                        DestinationWalletId = (Guid)systemCreditWalletId,
+                        Amount = (double)creditsToDeduct
+                    }
+                }
+            };
+            var txResult = await _walletClient.InitiateAsync(transaction);
+            await _walletClient.ExecuteAsync(txResult.TransactionHeader.TxId);
+
+            _logger.LogInformation("Deducted {Credits} credits for upload {VideoId}, user {UserId}, creditWalletId={WalletId}. TxId={TxId}",
+                creditsToDeduct, videoId, userId, creditWallet.WalletId, txResult.TransactionHeader.TxId);
+            return (true, creditsToDeduct, null, null, null);
+        }
+        catch (ApiException ex)
+        {
+            _logger.LogError(ex, "Wallet API error deducting credits for upload {VideoId}, user {UserId}", videoId, userId);
+            return (false, 0, "Wallet service error: " + ex.Message, (decimal)creditsToDeduct, null);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected error deducting credits for upload {VideoId}, user {UserId}", videoId, userId);
+            return (false, 0, "Failed to deduct credits: " + ex.Message, (decimal)creditsToDeduct, null);
+        }
+    }
+
     [HttpPost("upload")]
     public async Task<IActionResult> Upload(IFormFile? file)
     {
@@ -104,7 +226,6 @@ public class VideosController : ControllerBase
         if (string.IsNullOrEmpty(file.FileName))
             return BadRequest(new { error = "No selected file" });
 
-        // Save to a temporary file so we can both analyze duration and upload to S3
         var videoId = Guid.NewGuid().ToString();
         var filename = file.FileName;
         var tempPath = Path.Combine(Path.GetTempPath(), $"{videoId}{Path.GetExtension(filename)}");
@@ -116,53 +237,73 @@ public class VideosController : ControllerBase
                 await file.CopyToAsync(fs);
             }
 
-            // Detect video duration (in minutes) from the actual file using ffprobe.
-            // TEMP: if detection fails, continue with zero duration and skip credit checks.
             var durationMinutes = GetVideoDurationMinutes(tempPath);
             if (durationMinutes <= 0)
             {
                 _logger.LogWarning(
-                    "Failed to detect duration for uploaded video {VideoId} (file {FileName}). Temporarily skipping credit checks.",
-                    videoId,
-                    filename);
+                    "Could not detect duration for {VideoId} ({FileName}). Credit calculation will use zero.",
+                    videoId, filename);
                 durationMinutes = 0;
             }
 
-            // TEMP: disable credit calculation and wallet checks for now to unblock uploads.
-            var creditsNeeded = 0;
-            var minutesPerCredit = _videoPricingService.GetMinutesPerCredit();
+            // Step 1: Pre-check balance (read-only) — fail fast before the expensive S3 upload.
+            var preCheck = await PreCheckUploadCreditsAsync(CurrentUser.Uid!, durationMinutes);
+            if (!preCheck.CanAfford)
+            {
+                return StatusCode(402, new
+                {
+                    error = preCheck.Error ?? "Insufficient credits",
+                    required_credits = preCheck.RequiredCredits,
+                    available_credits = preCheck.AvailableCredits
+                });
+            }
 
+            // Step 2: Upload to S3 (no money has moved yet — safe if this fails).
             await using var uploadStream = System.IO.File.OpenRead(tempPath);
             var s3Key = await _s3.UploadVideoAsync(uploadStream, videoId, filename);
+
+            // Step 3: Deduct credits now that S3 succeeded.
+            decimal creditsDeducted = 0m;
+            if (preCheck.CreditsRequired > 0m)
+            {
+                var deduction = await DeductCreditsForUploadAsync(
+                    CurrentUser.Uid!, videoId, preCheck.CreditsRequired,
+                    $"Upload: {filename}, {durationMinutes:F1} min");
+                if (!deduction.Success)
+                {
+                    try { await _s3.DeleteFileAsync(s3Key); }
+                    catch (Exception ex) { _logger.LogWarning(ex, "S3 rollback failed after credit error for {VideoId}", videoId); }
+                    return StatusCode(402, new
+                    {
+                        error = deduction.Error ?? "Insufficient credits",
+                        required_credits = deduction.RequiredCredits,
+                        available_credits = deduction.AvailableCredits
+                    });
+                }
+                creditsDeducted = deduction.CreditsDeducted;
+            }
+
+            // Step 4: Persist task and kick off processing.
             await _db.CreateVideoTaskAsync(videoId, filename, CurrentUser.Uid!, CurrentUser.Email!, "in_queue", s3Key);
-
+            if (creditsDeducted > 0m)
+                await _db.UpdateVideoTaskAsync(videoId, new Dictionary<string, object?> { ["credits_charged"] = creditsDeducted });
             await TriggerWorkerAfterUploadAsync(videoId, CurrentUser.Uid!, filename, s3Key);
-
             await _taskUpdateHub.NotifyTaskUpdateAsync(CurrentUser.Uid!, new { video_id = videoId, status = "in_queue", filename });
 
             return Ok(new
             {
                 video_id = videoId,
                 duration_minutes = durationMinutes,
-                credits_deducted = creditsNeeded,
-                message = "Video uploaded and credits deducted",
+                credits_deducted = creditsDeducted,
+                message = creditsDeducted > 0m ? "Video uploaded and credits deducted" : "Video uploaded successfully",
                 s3_key = s3Key,
                 mode = IsWorkerApiEnabled ? "worker_api" : "http_trigger"
             });
         }
         finally
         {
-            try
-            {
-                if (System.IO.File.Exists(tempPath))
-                {
-                    System.IO.File.Delete(tempPath);
-                }
-            }
-            catch
-            {
-                // If cleanup fails, we just ignore it.
-            }
+            try { if (System.IO.File.Exists(tempPath)) System.IO.File.Delete(tempPath); }
+            catch { /* temp cleanup is best-effort */ }
         }
     }
 
@@ -371,51 +512,76 @@ public class VideosController : ControllerBase
 
             _logger.LogInformation("File assembled: {Size} bytes", totalSize);
 
-            // Match Python: no blocking duration check. If ffprobe is available, log duration; otherwise continue.
             var durationMinutes = GetVideoDurationMinutes(assembledPath);
             if (durationMinutes <= 0)
             {
                 _logger.LogWarning(
-                    "Failed to detect duration for assembled video {VideoId} (file {FileName}). Continuing without duration.",
+                    "Could not detect duration for assembled {VideoId} ({FileName}). Credit calculation will use zero.",
                     videoId, request.OriginalFilename);
                 durationMinutes = 0;
             }
 
-            var creditsNeeded = _videoPricingService.CalculateCreditsForMinutes(durationMinutes);
-            _logger.LogInformation("Assemble-file: duration={DurationMin} min, credits would be {Credits} (check/deduction disabled for debugging)", durationMinutes, creditsNeeded);
+            // Step 1: Pre-check balance (read-only) — fail fast before S3 upload.
+            var preCheck = await PreCheckUploadCreditsAsync(CurrentUser.Uid!, durationMinutes);
+            if (!preCheck.CanAfford)
+            {
+                try { Directory.Delete(chunksDir, true); if (System.IO.File.Exists(assembledPath)) System.IO.File.Delete(assembledPath); }
+                catch (Exception ex) { _logger.LogWarning(ex, "Cleanup after credit pre-check failure for {VideoId}", videoId); }
+                return StatusCode(402, new
+                {
+                    error = preCheck.Error ?? "Insufficient credits",
+                    required_credits = preCheck.RequiredCredits,
+                    available_credits = preCheck.AvailableCredits
+                });
+            }
 
-            // Upload to S3
+            // Step 2: Upload to S3 (no money has moved yet — safe if this fails).
             string s3Key;
             await using (var fileStream = System.IO.File.OpenRead(assembledPath))
             {
                 s3Key = await _s3.UploadVideoAsync(fileStream, videoId, request.OriginalFilename);
             }
 
+            // Step 3: Deduct credits now that S3 succeeded.
+            decimal creditsDeducted = 0m;
+            if (preCheck.CreditsRequired > 0m)
+            {
+                var deduction = await DeductCreditsForUploadAsync(
+                    CurrentUser.Uid!, videoId, preCheck.CreditsRequired,
+                    $"Chunked upload: {request.OriginalFilename}, {durationMinutes:F1} min");
+                if (!deduction.Success)
+                {
+                    try { await _s3.DeleteFileAsync(s3Key); }
+                    catch (Exception ex) { _logger.LogWarning(ex, "S3 rollback failed after credit error for {VideoId}", videoId); }
+                    try { Directory.Delete(chunksDir, true); if (System.IO.File.Exists(assembledPath)) System.IO.File.Delete(assembledPath); }
+                    catch (Exception ex) { _logger.LogWarning(ex, "Cleanup after credit deduction failure for {VideoId}", videoId); }
+                    return StatusCode(402, new
+                    {
+                        error = deduction.Error ?? "Insufficient credits",
+                        required_credits = deduction.RequiredCredits,
+                        available_credits = deduction.AvailableCredits
+                    });
+                }
+                creditsDeducted = deduction.CreditsDeducted;
+            }
+
+            // Step 4: Persist task and kick off processing.
             await _db.CreateVideoTaskAsync(videoId, request.OriginalFilename, CurrentUser.Uid!, CurrentUser.Email!, "in_queue", s3Key);
-
-            // Credit deduction temporarily disabled for chunk API debugging
-
+            if (creditsDeducted > 0m)
+                await _db.UpdateVideoTaskAsync(videoId, new Dictionary<string, object?> { ["credits_charged"] = creditsDeducted });
             await TriggerWorkerAfterUploadAsync(videoId, CurrentUser.Uid!, request.OriginalFilename, s3Key);
-
             await _taskUpdateHub.NotifyTaskUpdateAsync(CurrentUser.Uid!, new { video_id = videoId, status = "in_queue", filename = request.OriginalFilename });
 
-            // Cleanup
-            try
-            {
-                Directory.Delete(chunksDir, true);
-                System.IO.File.Delete(assembledPath);
-            }
-            catch (Exception cleanupEx)
-            {
-                _logger.LogWarning(cleanupEx, "Cleanup warning after assembly");
-            }
+            // Step 5: Cleanup temp files.
+            try { Directory.Delete(chunksDir, true); System.IO.File.Delete(assembledPath); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Temp cleanup warning after assembly of {VideoId}", videoId); }
 
             return Ok(new
             {
                 video_id = videoId,
                 duration_minutes = durationMinutes,
-                credits_deducted = 0, // temporarily disabled for chunk API debugging
-                message = "File assembled and queued for processing",
+                credits_deducted = creditsDeducted,
+                message = creditsDeducted > 0m ? "File assembled, credits deducted, and queued for processing" : "File assembled and queued for processing",
                 s3_key = s3Key,
                 total_size = totalSize
             });
@@ -431,7 +597,7 @@ public class VideosController : ControllerBase
     /// Import a single video from a direct URL or Nextcloud share.
     /// </summary>
     [HttpPost("import-url")]
-    public IActionResult ImportUrl([FromBody] ImportUrlRequest? request)
+    public async Task<IActionResult> ImportUrl([FromBody] ImportUrlRequest? request)
     {
         if (CurrentUser == null)
             return Unauthorized(new { error = "Authentication required" });
@@ -449,17 +615,18 @@ public class VideosController : ControllerBase
         if (string.IsNullOrEmpty(filename) || !IsValidVideoFilename(filename))
             return BadRequest(new { error = "Invalid video filename. Must be a video file (mp4, avi, mov, wmv, mkv, ts)" });
 
-        var videoId = Guid.NewGuid().ToString();
         var downloadUrl = ConvertToDirectUrl(url);
+
+        var videoId = Guid.NewGuid().ToString();
         var userId = CurrentUser.Uid!;
         var userEmail = CurrentUser.Email!;
 
         _logger.LogInformation("Single URL Import: {Filename} from {Url}, User: {Email}, VideoId: {VideoId}",
             filename, url, userEmail, videoId);
 
-        // Start import process in background (like Python's threading.Thread)
         _ = Task.Run(async () =>
         {
+            string? tempPath = null;
             try
             {
                 _logger.LogInformation("Starting download: {Filename}", filename);
@@ -470,42 +637,99 @@ public class VideosController : ControllerBase
                 using var response = await httpClient.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead);
                 response.EnsureSuccessStatusCode();
 
-                var tempPath = Path.Combine(Path.GetTempPath(), $"import_{videoId}{Path.GetExtension(filename)}");
+                tempPath = Path.Combine(Path.GetTempPath(), $"import_{videoId}{Path.GetExtension(filename)}");
                 await using (var fileStream = System.IO.File.Create(tempPath))
                 {
                     await response.Content.CopyToAsync(fileStream);
                 }
-
                 _logger.LogInformation("Downloaded: {Filename}", filename);
 
-                // Upload to S3
+                // Detect duration for accurate credit calculation.
+                var durationMinutes = GetVideoDurationMinutes(tempPath);
+                if (durationMinutes <= 0)
+                {
+                    _logger.LogWarning("Could not detect duration for import {VideoId} ({Filename}). Credit calculation will use zero.", videoId, filename);
+                    durationMinutes = 0;
+                }
+
+                // Real credit pre-check using actual duration (after download, before S3/charges).
+                var realPreCheck = await PreCheckUploadCreditsAsync(userId, durationMinutes);
+                if (!realPreCheck.CanAfford)
+                {
+                    _logger.LogInformation(
+                        "Import URL real credit pre-check failed for {VideoId}: needs {Required}, has {Available}. Duration={Duration:F1} min",
+                        videoId, realPreCheck.RequiredCredits, realPreCheck.AvailableCredits, durationMinutes);
+
+                    try
+                    {
+                        await _db.CreateVideoTaskAsync(videoId, filename, userId, userEmail, "failed");
+                        await _db.UpdateVideoTaskAsync(videoId, new Dictionary<string, object?>
+                        {
+                            ["error_message"] = realPreCheck.Error ?? "Insufficient credits",
+                            ["required_credits"] = realPreCheck.RequiredCredits,
+                            ["available_credits"] = realPreCheck.AvailableCredits
+                        });
+                        await _taskUpdateHub.NotifyTaskUpdateAsync(userId, new
+                        {
+                            video_id = videoId,
+                            status = "failed",
+                            filename,
+                            error = realPreCheck.Error ?? "Insufficient credits",
+                            required_credits = realPreCheck.RequiredCredits,
+                            available_credits = realPreCheck.AvailableCredits
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to record/import-url credit pre-check failure for {VideoId}", videoId);
+                    }
+
+                    return;
+                }
+
+                // Step 1: Upload to S3 first (no money moved yet).
                 await using var uploadStream = System.IO.File.OpenRead(tempPath);
                 var s3Key = await _s3.UploadVideoAsync(uploadStream, videoId, filename);
                 _logger.LogInformation("Uploaded to S3: {S3Key}", s3Key);
 
-                // Create database record
+                // Step 2: Deduct credits now that S3 succeeded.
+                var creditsRequired = _videoPricingService.CalculateCreditsForMinutes(durationMinutes);
+                if (creditsRequired > 0)
+                {
+                    var deduction = await DeductCreditsForUploadAsync(userId, videoId, creditsRequired, $"Import: {filename}, {durationMinutes:F1} min");
+                    if (!deduction.Success)
+                    {
+                        _logger.LogWarning("Import credit deduction failed for {VideoId}, user {UserId}: {Error}", videoId, userId, deduction.Error);
+                        try { await _s3.DeleteFileAsync(s3Key); } catch { /* best-effort S3 rollback */ }
+                        await _db.CreateVideoTaskAsync(videoId, filename, userId, userEmail, "failed");
+                        await _db.UpdateVideoTaskAsync(videoId, new Dictionary<string, object?> { ["error_message"] = deduction.Error ?? "Insufficient credits" });
+                        await _taskUpdateHub.NotifyTaskUpdateAsync(userId, new
+                        {
+                            video_id = videoId, status = "failed", filename,
+                            error = deduction.Error, required_credits = deduction.RequiredCredits, available_credits = deduction.AvailableCredits
+                        });
+                        return;
+                    }
+                }
+
+                // Step 3: Persist task and kick off processing.
                 await _db.CreateVideoTaskAsync(videoId, filename, userId, userEmail, "in_queue", s3Key);
+                if (creditsRequired > 0)
+                    await _db.UpdateVideoTaskAsync(videoId, new Dictionary<string, object?> { ["credits_charged"] = creditsRequired });
                 _logger.LogInformation("Created task: {VideoId}", videoId);
-
-                // Trigger worker (match Python import-url)
                 await TriggerWorkerAfterUploadAsync(videoId, userId, filename, s3Key);
-
-                // Notify via WebSocket (match Python)
                 await _taskUpdateHub.NotifyTaskUpdateAsync(userId, new { video_id = videoId, status = "in_queue", filename });
-
-                // Cleanup temp file
-                try { System.IO.File.Delete(tempPath); } catch { /* ignore */ }
-
                 _logger.LogInformation("Single URL import completed: {Filename}", filename);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Single URL import failed: {Filename}", filename);
-                try
-                {
-                    await _db.CreateVideoTaskAsync(videoId, filename, userId, userEmail, "failed");
-                }
-                catch { /* ignore */ }
+                try { await _db.CreateVideoTaskAsync(videoId, filename, userId, userEmail, "failed"); } catch { /* ignore */ }
+            }
+            finally
+            {
+                if (tempPath != null)
+                    try { System.IO.File.Delete(tempPath); } catch { /* best-effort */ }
             }
         });
 

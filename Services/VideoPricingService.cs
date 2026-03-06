@@ -11,8 +11,8 @@ public interface IVideoPricingService
     ///  - 10.01..20 minutes => 2 credits, etc.
     /// </summary>
     /// <param name="totalMinutes">Total minutes of video usage.</param>
-    /// <returns>Credits to charge (at least 1 if totalMinutes &gt; 0).</returns>
-    int CalculateCreditsForMinutes(double totalMinutes);
+    /// <returns>Credits to charge as a decimal (no ceiling).</returns>
+    decimal CalculateCreditsForMinutes(double totalMinutes);
 
     /// <summary>
     /// Returns the configured MinutesPerCredit value.
@@ -34,14 +34,14 @@ public class VideoPricingService : IVideoPricingService
         }
     }
 
-    public int CalculateCreditsForMinutes(double totalMinutes)
+    public decimal CalculateCreditsForMinutes(double totalMinutes)
     {
         if (totalMinutes <= 0)
-            return 0;
+            return 0m;
 
-        var raw = totalMinutes / _minutesPerCredit;
-        var credits = (int)Math.Ceiling(raw);
-        return credits < 1 ? 1 : credits;
+        // Example: MinutesPerCredit = 10, totalMinutes = 5 => 0.5 credits
+        var raw = (decimal)totalMinutes / _minutesPerCredit;
+        return raw;
     }
 
     public int GetMinutesPerCredit() => _minutesPerCredit;

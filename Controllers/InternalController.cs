@@ -10,6 +10,7 @@ public class InternalController : ControllerBase
     private readonly IPostgresDbService _db;
     private readonly IEmailNotificationService _emailService;
     private readonly ITaskUpdateHubService _taskUpdateHub;
+    private readonly IVideoCreditRefundService _creditRefundService;
     private readonly IConfiguration _config;
     private readonly ILogger<InternalController> _logger;
 
@@ -17,12 +18,14 @@ public class InternalController : ControllerBase
         IPostgresDbService db,
         IEmailNotificationService emailService,
         ITaskUpdateHubService taskUpdateHub,
+        IVideoCreditRefundService creditRefundService,
         IConfiguration config,
         ILogger<InternalController> logger)
     {
         _db = db;
         _emailService = emailService;
         _taskUpdateHub = taskUpdateHub;
+        _creditRefundService = creditRefundService;
         _config = config;
         _logger = logger;
     }
@@ -147,6 +150,20 @@ public class InternalController : ControllerBase
             var success = await _db.UpdateWorkerTaskAsync(
                 request.VideoId, request.WorkerId, request.Status,
                 request.Progress, request.PdfUrl, request.ErrorMessage);
+
+            if (success && request.Status == "failed")
+            {
+                try
+                {
+                    await _creditRefundService.RefundCreditsForVideoAsync(
+                        request.VideoId,
+                        request.ErrorMessage ?? "Worker reported failure");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Refund failed when worker reported failure for video {VideoId}", request.VideoId);
+                }
+            }
 
             if (success)
                 return Ok(new { success = true });

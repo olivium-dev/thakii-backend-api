@@ -1,2 +1,5 @@
 local-storage/videos/
 local-storage/videos/
+bin/
+obj/
+*.sourcelink.json

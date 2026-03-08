@@ -72,7 +72,8 @@ jobs:
             git reset --hard origin/PROF-572-Thakii-BE-Setup-and-integrate-Wallet-and-payment-gateway-with-Thakii
 
             echo '📦 Building and publishing...'
-            dotnet publish ThakiiBackend.Api.csproj -c Release -o ./publish
+            rm -rf ./publish
+            dotnet publish ThakiiBackend.Api.csproj -c Release -o $BACKEND_PATH/publish
 
             echo '🔧 Applying database migrations (migrate_*.sql only; do NOT run init_video_tasks.sql - it DROPs tables and wipes data)...'
             for f in scripts/migrate_*.sql; do

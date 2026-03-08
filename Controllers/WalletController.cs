@@ -1,4 +1,7 @@
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.AspNetCore.Mvc;
+using ThakiiBackend.Api.Models;
 using thakii.service.ServiceWallet;
 using WalletApiException = thakii.service.ServiceWallet.ApiException;
 
@@ -11,10 +14,50 @@ public class WalletController : ControllerBase
     private readonly ServiceWalletClient _walletClient;
     private readonly ILogger<WalletController> _logger;
 
+    private CurrentUser? CurrentUser => (CurrentUser?)HttpContext.Items["CurrentUser"];
+
     public WalletController(ServiceWalletClient walletClient, ILogger<WalletController> logger)
     {
         _walletClient = walletClient;
         _logger = logger;
+    }
+
+    /// <summary>Maps Firebase UID to the deterministic holder GUID used by the wallet service.</summary>
+    private static Guid UidToHolderId(string uid)
+    {
+        var bytes = MD5.HashData(Encoding.UTF8.GetBytes(uid));
+        return new Guid(bytes);
+    }
+
+    /// <summary>
+    /// Get the current user's wallet (holder and wallets). HolderId is derived from the authenticated user's token (Firebase UID).
+    /// </summary>
+    [HttpGet]
+    [ProducesResponseType(typeof(GetHolderWallets), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+    public async Task<IActionResult> GetMyWallet()
+    {
+        var user = CurrentUser;
+        if (user == null || string.IsNullOrEmpty(user.Uid))
+            return Unauthorized(new { error = "Authentication required" });
+
+        var holderId = UidToHolderId(user.Uid);
+        try
+        {
+            var result = await _walletClient.WalletsAsync(holderId);
+            return Ok(result);
+        }
+        catch (WalletApiException ex)
+        {
+            _logger.LogError(ex, "Wallet API error getting wallets for user {UserId}, holderId {HolderId}", user.Uid, holderId);
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected error getting wallets for user {UserId}, holderId {HolderId}", user.Uid, holderId);
+            return StatusCode(500, new { error = "Internal server error", details = ex.Message });
+        }
     }
 
     /// <summary>

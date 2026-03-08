@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 
 namespace ThakiiBackend.Api.Services;
 
@@ -148,9 +149,12 @@ public class RemoteVideoDurationService : IRemoteVideoDurationService
 
     private static double GetVideoDurationMinutesFromUrl(string url)
     {
+        var ffprobePath = (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) || RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            ? "/usr/bin/ffprobe"
+            : "ffprobe";
         var startInfo = new ProcessStartInfo
         {
-            FileName = "ffprobe",
+            FileName = ffprobePath,
             Arguments = $"-v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \"{url}\"",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -181,9 +185,12 @@ public class RemoteVideoDurationService : IRemoteVideoDurationService
 
     private static double GetVideoDurationMinutes(string filePath)
     {
+        var ffprobePath = (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) || RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            ? "/usr/bin/ffprobe"
+            : "ffprobe";
         var startInfo = new ProcessStartInfo
         {
-            FileName = "ffprobe",
+            FileName = ffprobePath,
             Arguments = $"-v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \"{filePath}\"",
             RedirectStandardOutput = true,
             RedirectStandardError = true,

@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using ThakiiBackend.Api.Models;
 using ThakiiBackend.Api.Services;
 using thakii.service.ServiceWallet;
@@ -308,13 +309,16 @@ public class VideosController : ControllerBase
     }
 
     /// <summary>
-    /// Uses ffprobe (must be installed and available in PATH) to detect video duration in minutes.
+    /// Uses ffprobe to detect video duration in minutes. Uses full path on Linux/macOS so it works when PATH is not set (e.g. systemd).
     /// </summary>
     private static double GetVideoDurationMinutes(string filePath)
     {
+        var ffprobePath = (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) || RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            ? "/usr/bin/ffprobe"
+            : "ffprobe";
         var startInfo = new ProcessStartInfo
         {
-            FileName = "ffprobe",
+            FileName = ffprobePath,
             Arguments = $"-v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \"{filePath}\"",
             RedirectStandardOutput = true,
             RedirectStandardError = true,

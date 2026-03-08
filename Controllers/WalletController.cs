@@ -177,8 +177,12 @@ public class WalletController : ControllerBase
     }
 }
 
+/// <summary>
+/// Request for the Apple IAP webhook. Use user.holder_id from the login response as UserId (GUID), not the Firebase uid.
+/// </summary>
 public class AppleIAPWebhookRequest
 {
+    /// <summary>Wallet holder ID (GUID). Use the holder_id returned in the auth/login user object.</summary>
     public string UserId { get; set; } = string.Empty;
     public int CreditAmount { get; set; }
     public decimal Price { get; set; }

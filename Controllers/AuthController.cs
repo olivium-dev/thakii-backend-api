@@ -117,12 +117,22 @@ public class AuthController : ControllerBase
                 "Auth login finished successfully for user {UserId}, email {Email}.",
                 userId, email);
 
+            var holderId = UidToHolderId(userId);
+
             return Ok(new
             {
                 success = true,
                 backend_token = backendToken,
                 expires_in_days = 30,
-                user = new { uid = userId, email, name = userData["name"], picture = userData["picture"], is_admin = isAdmin },
+                user = new
+                {
+                    uid = userId,
+                    holder_id = holderId.ToString(),
+                    email,
+                    name = userData["name"],
+                    picture = userData["picture"],
+                    is_admin = isAdmin
+                },
                 message = "Firebase login successful, use backend_token for all future requests"
             });
         }
@@ -195,6 +205,7 @@ public class AuthController : ControllerBase
             var isAdmin = superAdmins.Contains(email);
 
             var firebaseProvider = jwtToken.Claims.FirstOrDefault(c => c.Type == "firebase")?.Value;
+            var holderId = UidToHolderId(userId);
 
             return Ok(new
             {
@@ -206,6 +217,7 @@ public class AuthController : ControllerBase
                 user = new
                 {
                     uid = userId,
+                    holder_id = holderId.ToString(),
                     email,
                     name,
                     picture = picture ?? "",
@@ -242,10 +254,12 @@ public class AuthController : ControllerBase
             "GetUser called. uid={Uid}, email={Email}, tokenType={TokenType}, exp={Exp}, iat={Iat}",
             user.Uid, user.Email, tokenType, exp, iat);
 
+        var holderId = !string.IsNullOrEmpty(user.Uid) ? UidToHolderId(user.Uid) : default;
         var userResponse = new Dictionary<string, object?>
         {
             ["uid"] = user.Uid,
             ["user_id"] = user.Uid,
+            ["holder_id"] = holderId != default ? holderId.ToString() : null,
             ["email"] = user.Email,
             ["name"] = user.Name,
             ["picture"] = user.Picture,

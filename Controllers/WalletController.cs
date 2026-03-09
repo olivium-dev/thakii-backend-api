@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Mvc;
+using ThakiiBackend.Api.DTO;
 using ThakiiBackend.Api.Models;
 using thakii.service.ServiceWallet;
 using WalletApiException = thakii.service.ServiceWallet.ApiException;
@@ -175,16 +176,5 @@ public class WalletController : ControllerBase
             return StatusCode(500, new { error = "Internal server error", details = ex.Message });
         }
     }
-}
-
-/// <summary>
-/// Request for the Apple IAP webhook. Use user.holder_id from the login response as UserId (GUID), not the Firebase uid.
-/// </summary>
-public class AppleIAPWebhookRequest
-{
-    /// <summary>Wallet holder ID (GUID). Use the holder_id returned in the auth/login user object.</summary>
-    public string UserId { get; set; } = string.Empty;
-    public int CreditAmount { get; set; }
-    public decimal Price { get; set; }
 }
 

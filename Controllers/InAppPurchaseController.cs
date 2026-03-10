@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Mvc;
+using ThakiiBackend.Api.DTO;
 using ThakiiBackend.Api.Models;
 using thakii.service.ServiceInAppPurchase;
 using thakii.service.ServiceWallet;
@@ -58,20 +59,25 @@ public class InAppPurchaseController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status422UnprocessableEntity)]
     [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-    public async Task<IActionResult> HandleAppleWebhook([FromBody] AppleWebhookPayload request)
+    public async Task<IActionResult> HandleAppleWebhook([FromBody] AppleWebhookDto dto)
     {
         try
         {
-            if (request == null || string.IsNullOrEmpty(request.SignedPayload))
+            if (dto == null || string.IsNullOrEmpty(dto.SignedPayload))
             {
                 _logger.LogWarning("Received Apple webhook with missing or empty signedPayload");
                 return BadRequest(new { error = "Invalid webhook payload: signedPayload is required" });
             }
 
-            _logger.LogInformation("Received Apple webhook with signedPayload (length: {PayloadLength})",
-                request.SignedPayload.Length);
+            var serviceRequest = new AppleWebhookPayload
+            {
+                SignedPayload = dto.SignedPayload
+            };
 
-            var response = await _inAppPurchaseClient.Handle_apple_webhookAsync(request);
+            _logger.LogInformation("Received Apple webhook with signedPayload (length: {PayloadLength})",
+                serviceRequest.SignedPayload.Length);
+
+            var response = await _inAppPurchaseClient.Handle_apple_webhookAsync(serviceRequest);
 
             _logger.LogInformation("Successfully processed Apple webhook");
 

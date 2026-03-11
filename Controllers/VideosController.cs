@@ -1004,6 +1004,25 @@ public class VideosController : ControllerBase
             message = $"Video cancelled (was in {currentStatus} state)";
         }
 
+        // Attempt credit refund for user-initiated cancellations in billable states.
+        // We only try for states where credits may have been charged already:
+        //  - processing: worker is running on a charged upload
+        //  - in_queue / uploaded: upload + charge completed, waiting for worker
+        // For completed/done videos we do not refund on cancel by default.
+        if (currentStatus is "processing" or "in_queue" or "uploaded")
+        {
+            try
+            {
+                await _creditRefundService.RefundCreditsForVideoAsync(
+                    videoId,
+                    reason ?? $"User cancelled video while status={currentStatus}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Refund failed when user cancelled video {VideoId} in state {Status}", videoId, currentStatus);
+            }
+        }
+
         var statusToSend = (currentStatus == "processing") ? "cancelling" : "cancelled";
         await _taskUpdateHub.NotifyTaskUpdateAsync(CurrentUser.Uid!, new { video_id = videoId, status = statusToSend, message = "Video cancelled by user" });
 

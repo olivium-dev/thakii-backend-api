@@ -232,7 +232,8 @@ jobs:
           set -e
           cd $BACKEND_PATH
           sudo cp nginx/cors-map.conf /etc/nginx/conf.d/cors-map.conf
-          sudo cp nginx/thakii-backend.conf /etc/nginx/conf.d/thakii-backend.conf
+          sudo cp nginx/thakii-backend.conf /etc/nginx/sites-available/thakii-backend.conf
+          sudo rm -f /etc/nginx/conf.d/thakii-backend.conf
           sudo nginx -t && sudo systemctl reload nginx
           echo '✅ Nginx CORS config deployed and reloaded'
         "

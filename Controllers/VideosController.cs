@@ -311,8 +311,14 @@ public class VideosController : ControllerBase
     /// <summary>
     /// Uses ffprobe to detect video duration in minutes. Uses full path on Linux/macOS so it works when PATH is not set (e.g. systemd).
     /// </summary>
-    private static double GetVideoDurationMinutes(string filePath)
+    private double GetVideoDurationMinutes(string filePath)
     {
+        var fileExists = System.IO.File.Exists(filePath);
+        var fileSize = fileExists ? new FileInfo(filePath).Length : 0;
+        
+        _logger.LogInformation("Attempting duration detection: file={FilePath}, size={Size} bytes, exists={Exists}", 
+            filePath, fileSize, fileExists);
+
         var ffprobePath = (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) || RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             ? "/usr/bin/ffprobe"
             : "ffprobe";
@@ -328,30 +334,44 @@ public class VideosController : ControllerBase
 
         try
         {
+            var startTime = DateTime.UtcNow;
             using var process = Process.Start(startInfo);
             if (process == null)
             {
+                _logger.LogWarning("ffprobe process failed to start for {FilePath}", filePath);
                 return 0;
             }
 
             var output = process.StandardOutput.ReadToEnd();
             var error = process.StandardError.ReadToEnd();
             process.WaitForExit(10000);
+            var elapsed = (DateTime.UtcNow - startTime).TotalMilliseconds;
+
+            _logger.LogInformation(
+                "ffprobe completed: file={FilePath}, exitCode={ExitCode}, elapsed={Elapsed}ms, output='{Output}', error='{Error}'",
+                filePath, process.ExitCode, elapsed, output.Trim(), error.Trim());
 
             if (process.ExitCode != 0)
             {
+                _logger.LogWarning("ffprobe exited with code {ExitCode} for {FilePath}. Error: {Error}", 
+                    process.ExitCode, filePath, error.Trim());
                 return 0;
             }
 
             if (double.TryParse(output.Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out var seconds))
             {
-                return seconds / 60.0;
+                var minutes = seconds / 60.0;
+                _logger.LogInformation("Duration detected successfully: {Minutes:F2} minutes ({Seconds:F1} seconds) for {FilePath}", 
+                    minutes, seconds, filePath);
+                return minutes;
             }
 
+            _logger.LogWarning("Failed to parse ffprobe output '{Output}' for {FilePath}", output.Trim(), filePath);
             return 0;
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogError(ex, "Exception during duration detection for {FilePath}", filePath);
             return 0;
         }
     }
@@ -646,14 +666,24 @@ public class VideosController : ControllerBase
                 {
                     await response.Content.CopyToAsync(fileStream);
                 }
-                _logger.LogInformation("Downloaded: {Filename}", filename);
+                var fileSize = new FileInfo(tempPath).Length;
+                _logger.LogInformation("Downloaded: {Filename}, size: {Size} bytes ({SizeMB:F2} MB)", 
+                    filename, fileSize, fileSize / 1024.0 / 1024.0);
 
                 // Detect duration for accurate credit calculation.
                 var durationMinutes = GetVideoDurationMinutes(tempPath);
                 if (durationMinutes <= 0)
                 {
-                    _logger.LogWarning("Could not detect duration for import {VideoId} ({Filename}). Credit calculation will use zero.", videoId, filename);
+                    _logger.LogWarning(
+                        "Could not detect duration for import {VideoId} ({Filename}, {Size} bytes). Credit calculation will use zero. TempPath: {TempPath}", 
+                        videoId, filename, fileSize, tempPath);
                     durationMinutes = 0;
+                }
+                else
+                {
+                    _logger.LogInformation(
+                        "Duration detected for import {VideoId} ({Filename}): {Duration:F2} minutes", 
+                        videoId, filename, durationMinutes);
                 }
 
                 // Real credit pre-check using actual duration (after download, before S3/charges).
@@ -698,6 +728,10 @@ public class VideosController : ControllerBase
 
                 // Step 2: Deduct credits now that S3 succeeded.
                 var creditsRequired = _videoPricingService.CalculateCreditsForMinutes(durationMinutes);
+                _logger.LogInformation(
+                    "Credit calculation for import {VideoId}: duration={Duration:F2} min, credits={Credits:F4}", 
+                    videoId, durationMinutes, creditsRequired);
+
                 if (creditsRequired > 0)
                 {
                     var deduction = await DeductCreditsForUploadAsync(userId, videoId, creditsRequired, $"Import: {filename}, {durationMinutes:F1} min");
@@ -714,12 +748,28 @@ public class VideosController : ControllerBase
                         });
                         return;
                     }
+                    _logger.LogInformation(
+                        "Credits deducted successfully for import {VideoId}: {Credits:F4} credits", 
+                        videoId, creditsRequired);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "Skipping credit deduction for import {VideoId}: creditsRequired={Credits}, duration={Duration:F2} min", 
+                        videoId, creditsRequired, durationMinutes);
                 }
 
                 // Step 3: Persist task and kick off processing.
                 await _db.CreateVideoTaskAsync(videoId, filename, userId, userEmail, "in_queue", s3Key);
                 if (creditsRequired > 0)
+                {
                     await _db.UpdateVideoTaskAsync(videoId, new Dictionary<string, object?> { ["credits_charged"] = creditsRequired });
+                    _logger.LogInformation("Recorded credits_charged={Credits:F4} in database for {VideoId}", creditsRequired, videoId);
+                }
+                else
+                {
+                    _logger.LogWarning("No credits recorded in database for {VideoId} (creditsRequired=0)", videoId);
+                }
                 _logger.LogInformation("Created task: {VideoId}", videoId);
                 await TriggerWorkerAfterUploadAsync(videoId, userId, filename, s3Key);
                 await _taskUpdateHub.NotifyTaskUpdateAsync(userId, new { video_id = videoId, status = "in_queue", filename });

@@ -183,14 +183,8 @@ public class RemoteVideoDurationService : IRemoteVideoDurationService
         }
     }
 
-    private double GetVideoDurationMinutes(string filePath)
+    private static double GetVideoDurationMinutes(string filePath)
     {
-        var fileExists = System.IO.File.Exists(filePath);
-        var fileSize = fileExists ? new FileInfo(filePath).Length : 0;
-        
-        _logger.LogInformation("RemoteVideoDurationService: Attempting duration detection: file={FilePath}, size={Size} bytes, exists={Exists}", 
-            filePath, fileSize, fileExists);
-
         var ffprobePath = (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) || RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             ? "/usr/bin/ffprobe"
             : "ffprobe";
@@ -206,44 +200,21 @@ public class RemoteVideoDurationService : IRemoteVideoDurationService
 
         try
         {
-            var startTime = DateTime.UtcNow;
             using var process = Process.Start(startInfo);
-            if (process == null)
-            {
-                _logger.LogWarning("RemoteVideoDurationService: ffprobe process failed to start for {FilePath}", filePath);
-                return 0;
-            }
+            if (process == null) return 0;
 
             var output = process.StandardOutput.ReadToEnd();
-            var error = process.StandardError.ReadToEnd();
             process.WaitForExit(10000);
-            var elapsed = (DateTime.UtcNow - startTime).TotalMilliseconds;
 
-            _logger.LogInformation(
-                "RemoteVideoDurationService: ffprobe completed: file={FilePath}, exitCode={ExitCode}, elapsed={Elapsed}ms, output='{Output}', error='{Error}'",
-                filePath, process.ExitCode, elapsed, output.Trim(), error.Trim());
-
-            if (process.ExitCode != 0)
-            {
-                _logger.LogWarning("RemoteVideoDurationService: ffprobe exited with code {ExitCode} for {FilePath}. Error: {Error}", 
-                    process.ExitCode, filePath, error.Trim());
-                return 0;
-            }
+            if (process.ExitCode != 0) return 0;
 
             if (double.TryParse(output.Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out var seconds))
-            {
-                var minutes = seconds / 60.0;
-                _logger.LogInformation("RemoteVideoDurationService: Duration detected successfully: {Minutes:F2} minutes ({Seconds:F1} seconds) for {FilePath}", 
-                    minutes, seconds, filePath);
-                return minutes;
-            }
+                return seconds / 60.0;
 
-            _logger.LogWarning("RemoteVideoDurationService: Failed to parse ffprobe output '{Output}' for {FilePath}", output.Trim(), filePath);
             return 0;
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogError(ex, "RemoteVideoDurationService: Exception during duration detection for {FilePath}", filePath);
             return 0;
         }
     }

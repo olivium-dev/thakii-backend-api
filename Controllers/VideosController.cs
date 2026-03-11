@@ -242,9 +242,12 @@ public class VideosController : ControllerBase
             if (durationMinutes <= 0)
             {
                 _logger.LogWarning(
-                    "Could not detect duration for {VideoId} ({FileName}). Credit calculation will use zero.",
+                    "Could not detect duration for {VideoId} ({FileName}). Rejecting upload.",
                     videoId, filename);
-                durationMinutes = 0;
+                return StatusCode(422, new
+                {
+                    error = "Could not detect video duration. Please upload a valid MP4 video file or use a direct video URL."
+                });
             }
 
             // Step 1: Pre-check balance (read-only) — fail fast before the expensive S3 upload.
@@ -311,14 +314,8 @@ public class VideosController : ControllerBase
     /// <summary>
     /// Uses ffprobe to detect video duration in minutes. Uses full path on Linux/macOS so it works when PATH is not set (e.g. systemd).
     /// </summary>
-    private double GetVideoDurationMinutes(string filePath)
+    private static double GetVideoDurationMinutes(string filePath)
     {
-        var fileExists = System.IO.File.Exists(filePath);
-        var fileSize = fileExists ? new FileInfo(filePath).Length : 0;
-        
-        _logger.LogInformation("Attempting duration detection: file={FilePath}, size={Size} bytes, exists={Exists}", 
-            filePath, fileSize, fileExists);
-
         var ffprobePath = (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) || RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             ? "/usr/bin/ffprobe"
             : "ffprobe";
@@ -334,44 +331,30 @@ public class VideosController : ControllerBase
 
         try
         {
-            var startTime = DateTime.UtcNow;
             using var process = Process.Start(startInfo);
             if (process == null)
             {
-                _logger.LogWarning("ffprobe process failed to start for {FilePath}", filePath);
                 return 0;
             }
 
             var output = process.StandardOutput.ReadToEnd();
             var error = process.StandardError.ReadToEnd();
             process.WaitForExit(10000);
-            var elapsed = (DateTime.UtcNow - startTime).TotalMilliseconds;
-
-            _logger.LogInformation(
-                "ffprobe completed: file={FilePath}, exitCode={ExitCode}, elapsed={Elapsed}ms, output='{Output}', error='{Error}'",
-                filePath, process.ExitCode, elapsed, output.Trim(), error.Trim());
 
             if (process.ExitCode != 0)
             {
-                _logger.LogWarning("ffprobe exited with code {ExitCode} for {FilePath}. Error: {Error}", 
-                    process.ExitCode, filePath, error.Trim());
                 return 0;
             }
 
             if (double.TryParse(output.Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out var seconds))
             {
-                var minutes = seconds / 60.0;
-                _logger.LogInformation("Duration detected successfully: {Minutes:F2} minutes ({Seconds:F1} seconds) for {FilePath}", 
-                    minutes, seconds, filePath);
-                return minutes;
+                return seconds / 60.0;
             }
 
-            _logger.LogWarning("Failed to parse ffprobe output '{Output}' for {FilePath}", output.Trim(), filePath);
             return 0;
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogError(ex, "Exception during duration detection for {FilePath}", filePath);
             return 0;
         }
     }
@@ -540,9 +523,22 @@ public class VideosController : ControllerBase
             if (durationMinutes <= 0)
             {
                 _logger.LogWarning(
-                    "Could not detect duration for assembled {VideoId} ({FileName}). Credit calculation will use zero.",
+                    "Could not detect duration for assembled {VideoId} ({FileName}). Rejecting upload.",
                     videoId, request.OriginalFilename);
-                durationMinutes = 0;
+                try
+                {
+                    Directory.Delete(chunksDir, true);
+                    if (System.IO.File.Exists(assembledPath)) System.IO.File.Delete(assembledPath);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Cleanup after duration detection failure for assembled {VideoId}", videoId);
+                }
+
+                return StatusCode(422, new
+                {
+                    error = "Could not detect video duration. Please upload a valid MP4 video file."
+                });
             }
 
             // Step 1: Pre-check balance (read-only) — fail fast before S3 upload.
@@ -666,24 +662,41 @@ public class VideosController : ControllerBase
                 {
                     await response.Content.CopyToAsync(fileStream);
                 }
-                var fileSize = new FileInfo(tempPath).Length;
-                _logger.LogInformation("Downloaded: {Filename}, size: {Size} bytes ({SizeMB:F2} MB)", 
-                    filename, fileSize, fileSize / 1024.0 / 1024.0);
+                _logger.LogInformation("Downloaded: {Filename}", filename);
 
                 // Detect duration for accurate credit calculation.
                 var durationMinutes = GetVideoDurationMinutes(tempPath);
                 if (durationMinutes <= 0)
                 {
+                    var errorMessage =
+                        "Could not detect video duration. Please provide a direct video URL pointing to a valid MP4 file or upload the file instead.";
+
                     _logger.LogWarning(
-                        "Could not detect duration for import {VideoId} ({Filename}, {Size} bytes). Credit calculation will use zero. TempPath: {TempPath}", 
-                        videoId, filename, fileSize, tempPath);
-                    durationMinutes = 0;
-                }
-                else
-                {
-                    _logger.LogInformation(
-                        "Duration detected for import {VideoId} ({Filename}): {Duration:F2} minutes", 
-                        videoId, filename, durationMinutes);
+                        "Could not detect duration for import {VideoId} ({Filename}). Rejecting import.",
+                        videoId, filename);
+
+                    try
+                    {
+                        await _db.CreateVideoTaskAsync(videoId, filename, userId, userEmail, "failed");
+                        await _db.UpdateVideoTaskAsync(videoId, new Dictionary<string, object?>
+                        {
+                            ["error_message"] = errorMessage
+                        });
+                        await _taskUpdateHub.NotifyTaskUpdateAsync(userId, new
+                        {
+                            video_id = videoId,
+                            status = "failed",
+                            filename,
+                            error = errorMessage
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex,
+                            "Failed to record duration detection failure for import-url {VideoId}", videoId);
+                    }
+
+                    return;
                 }
 
                 // Real credit pre-check using actual duration (after download, before S3/charges).

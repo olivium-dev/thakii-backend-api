@@ -1,4 +1,6 @@
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.RateLimiting;
 using ThakiiBackend.Api.Services;
 using ThakiiBackend.Api.Middleware;
 using ThakiiBackend.Api.Middleware.SocketIo;
@@ -6,6 +8,7 @@ using ThakiiBackend.Api.Hubs;
 using thakii.service.ServiceWallet;
 using thakii.service.ServiceCatalog;
 using thakii.service.ServiceInAppPurchase;
+using saawt.service.ServiceUnifiedPayment;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -16,6 +19,35 @@ builder.WebHost.UseUrls("http://0.0.0.0:5001");
 builder.WebHost.ConfigureKestrel(options =>
 {
     options.Limits.MaxRequestBodySize = null;
+});
+
+// In-memory cache (used for opaque checkout session codes)
+builder.Services.AddMemoryCache();
+
+// Rate limiting — per-IP sliding-window limits to stop brute-force and flooding
+builder.Services.AddRateLimiter(o =>
+{
+    o.RejectionStatusCode = 429;
+
+    // Checkout sessions: max 10 creations/minute per IP
+    o.AddSlidingWindowLimiter("checkout", cfg =>
+    {
+        cfg.Window              = TimeSpan.FromMinutes(1);
+        cfg.SegmentsPerWindow   = 4;
+        cfg.PermitLimit         = 10;
+        cfg.QueueLimit          = 0;
+        cfg.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+    });
+
+    // Payment creation: max 20/minute per IP
+    o.AddSlidingWindowLimiter("payments", cfg =>
+    {
+        cfg.Window              = TimeSpan.FromMinutes(1);
+        cfg.SegmentsPerWindow   = 4;
+        cfg.PermitLimit         = 20;
+        cfg.QueueLimit          = 0;
+        cfg.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+    });
 });
 
 // Services
@@ -44,6 +76,10 @@ builder.Services.Configure<FormOptions>(options =>
 {
     options.MultipartBodyLengthLimit = long.MaxValue;
 });
+
+// HttpContextAccessor + CorrelationIdHandler (forwards X-Correlation-ID to downstream services)
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddTransient<CorrelationIdHandler>();
 
 // HttpClientFactory (used by services for external calls)
 builder.Services.AddHttpClient();
@@ -77,22 +113,77 @@ builder.Services.AddHttpClient<ServiceInAppPurchaseClient>()
         return new ServiceInAppPurchaseClient(baseUrl, httpClient);
     });
 
-// Controllers - use snake_case to match Python API contract
-builder.Services.AddControllers()
-    .AddJsonOptions(o => o.JsonSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower);
+// Unified payment gateway client (unified payment microservice)
+// Attaches UNIFIED_PAYMENT_GATEWAY_API_KEY so the gateway's ApiKeyPlug accepts the request.
+// Also forwards X-Correlation-ID via CorrelationIdHandler for end-to-end tracing.
+builder.Services.AddHttpClient<ServiceUnifiedPaymentGatewayClient>()
+    .AddHttpMessageHandler<CorrelationIdHandler>()
+    .AddTypedClient((httpClient, sp) =>
+    {
+        var config = sp.GetRequiredService<IConfiguration>();
+        var baseUrl = config["UnifiedPaymentGatewayApi:BaseUrl"] ?? "http://localhost:4000";
+        var apiKey = Environment.GetEnvironmentVariable("UNIFIED_PAYMENT_GATEWAY_API_KEY")
+                     ?? config["UnifiedPaymentGatewayApi:ApiKey"];
+        if (!string.IsNullOrEmpty(apiKey))
+            httpClient.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+        return new ServiceUnifiedPaymentGatewayClient(httpClient, baseUrl);
+    });
 
-// CORS - AllowCredentials requires specific origins, not wildcard
+// Dedicated HttpClient for raw webhook passthrough.
+// Webhooks MUST NOT be deserialized/re-serialized — the HMAC signature covers the exact bytes.
+// This client sends no Authorization header; the gateway authenticates webhooks via HMAC only.
+// Correlation ID is still forwarded so webhook traces can be linked to the original request.
+builder.Services.AddHttpClient("UnifiedPaymentGatewayWebhook", (sp, client) =>
+{
+    var config = sp.GetRequiredService<IConfiguration>();
+    var baseUrl = (config["UnifiedPaymentGatewayApi:BaseUrl"] ?? "http://localhost:4000").TrimEnd('/');
+    client.BaseAddress = new Uri(baseUrl + "/");
+    client.Timeout = TimeSpan.FromSeconds(30);
+}).AddHttpMessageHandler<CorrelationIdHandler>();
+
+// Unified payment gateway configuration (enabled gateways, logos, etc.)
+builder.Services.Configure<UnifiedPaymentGatewayOptions>(
+    builder.Configuration.GetSection("UnifiedPaymentGateway"));
+
+// Controllers - use snake_case to match Python API contract.
+// PropertyNameCaseInsensitive allows "KWD" to match the enum member regardless of case.
+// JsonStringEnumConverter(SnakeCaseLower) serialises enums as lowercase strings ("captured",
+// "kwd") and deserialises any casing ("KWD", "kwd") of those values.
+builder.Services.AddControllers()
+    .AddJsonOptions(o =>
+    {
+        o.JsonSerializerOptions.PropertyNamingPolicy       = System.Text.Json.JsonNamingPolicy.SnakeCaseLower;
+        o.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
+        o.JsonSerializerOptions.Converters.Add(
+            new System.Text.Json.Serialization.JsonStringEnumConverter(
+                System.Text.Json.JsonNamingPolicy.SnakeCaseLower));
+    });
+
+// CORS
 var allowedOrigins = Environment.GetEnvironmentVariable("ALLOWED_ORIGINS");
 if (!string.IsNullOrEmpty(allowedOrigins))
 {
+    // Production: explicit origin list + credentials (for cookie-based auth if ever added)
     var origins = allowedOrigins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins(origins).AllowAnyMethod().AllowAnyHeader().AllowCredentials()));
+    builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
+        p.WithOrigins(origins).AllowAnyMethod().AllowAnyHeader().AllowCredentials()));
+}
+else if (builder.Environment.IsDevelopment())
+{
+    // Development: allow everything — payment-web, thakii-frontend, ngrok tunnels, etc.
+    // AllowAnyOrigin() sets Access-Control-Allow-Origin: * which all browsers accept without issue.
+    // Note: AllowAnyOrigin() cannot be combined with AllowCredentials(); credentials are not
+    // needed here since the payment-web does not send cookies.
+    builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
+        p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 }
 else
 {
-    // Dev: allow common localhost origins (wildcard + credentials not allowed in CORS)
-    var devOrigins = new[] { "http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173", "http://localhost:5000" };
-    builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins(devOrigins).AllowAnyMethod().AllowAnyHeader().AllowCredentials()));
+    // Non-development fallback: restrict to known local origins
+    var devOrigins = new[] { "http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173" };
+    builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
+        p.WithOrigins(devOrigins).AllowAnyMethod().AllowAnyHeader().AllowCredentials()));
 }
 
 // Swagger
@@ -101,7 +192,16 @@ builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
+// Enforce HTTPS in non-development environments
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();
+    app.UseHttpsRedirection();
+}
+
+app.UseCorrelationId();
 app.UseCors();
+app.UseRateLimiter();
 app.UseMiddleware<SocketIoMiddleware>();
 app.UseAuthMiddleware();
 app.MapControllers();

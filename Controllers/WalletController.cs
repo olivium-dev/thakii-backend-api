@@ -105,6 +105,40 @@ public class WalletController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Get the current user's credit balance (credits only). Used by thakii-frontend for display.
+    /// </summary>
+    [HttpGet("balance")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+    public async Task<IActionResult> GetBalance()
+    {
+        if (CurrentUser?.Uid == null)
+            return Unauthorized(new { error = "Authentication required" });
+
+        try
+        {
+            var holderId = UidToHolderId(CurrentUser.Uid);
+            var userWalletHolder = await _walletClient.WalletsAsync(holderId);
+
+            var creditWallet = userWalletHolder.Wallets?.FirstOrDefault(w => w.CurrencyID == 1);
+            var balance = creditWallet?.Amount ?? 0;
+
+            return Ok(new { credits = balance });
+        }
+        catch (WalletApiException ex)
+        {
+            _logger.LogError(ex, "Wallet API error fetching balance for user {Uid}", CurrentUser.Uid);
+            return StatusCode(ex.StatusCode, new { error = "Failed to retrieve credit balance" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected error fetching balance for user {Uid}", CurrentUser.Uid);
+            return StatusCode(500, new { error = "Internal server error" });
+        }
+    }
+
     [HttpGet("packages")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public IActionResult GetPackages()

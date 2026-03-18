@@ -59,17 +59,19 @@ jobs:
         env:
           BACKEND_PATH: ${{ env.BACKEND_PATH }}
           SERVICE_NAME: ${{ env.SERVICE_NAME }}
+          # Deploy the branch that triggered this run (e.g. main on push, or the branch chosen for workflow_dispatch)
+          DEPLOY_BRANCH: ${{ github.ref_name }}
         run: |
           ssh thakii-server "
             set -e
             echo '=== Deploying .NET Backend API ==='
+            echo '📌 Deploying branch: $DEPLOY_BRANCH'
             cd $BACKEND_PATH
 
             echo '📥 Pulling latest code...'
             git fetch origin
-            git checkout PROF-572-Thakii-BE-Setup-and-integrate-Wallet-and-payment-gateway-with-Thakii || \
-              git checkout -b PROF-572-Thakii-BE-Setup-and-integrate-Wallet-and-payment-gateway-with-Thakii origin/PROF-572-Thakii-BE-Setup-and-integrate-Wallet-and-payment-gateway-with-Thakii
-            git reset --hard origin/PROF-572-Thakii-BE-Setup-and-integrate-Wallet-and-payment-gateway-with-Thakii
+            git checkout \"$DEPLOY_BRANCH\" 2>/dev/null || git checkout -b \"$DEPLOY_BRANCH\" \"origin/$DEPLOY_BRANCH\"
+            git reset --hard \"origin/$DEPLOY_BRANCH\"
 
             echo '📦 Building and publishing...'
             rm -rf ./publish

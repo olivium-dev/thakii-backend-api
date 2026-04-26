@@ -127,11 +127,20 @@ CREATE TABLE batch_import_jobs (
     total_size BIGINT DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     completed_at TIMESTAMP,
-    error_message TEXT
+    error_message TEXT,
+    -- updated_at is required because the BEFORE-UPDATE trigger below assigns it.
+    -- Omitting this column would cause every UPDATE on batch_import_jobs to fail
+    -- with PostgreSQL error 42703: record "new" has no field "updated_at",
+    -- which silently breaks BatchImportService.ProcessBatchJobAsync.
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX idx_batch_import_jobs_user_id ON batch_import_jobs(user_id);
 CREATE INDEX idx_batch_import_jobs_status ON batch_import_jobs(status);
+
+CREATE TRIGGER update_batch_import_jobs_updated_at
+    BEFORE UPDATE ON batch_import_jobs
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TABLE batch_import_videos (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -147,3 +156,7 @@ CREATE TABLE batch_import_videos (
 );
 
 CREATE INDEX idx_batch_import_videos_job_id ON batch_import_videos(job_id);
+
+CREATE TRIGGER update_batch_import_videos_updated_at
+    BEFORE UPDATE ON batch_import_videos
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

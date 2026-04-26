@@ -52,14 +52,53 @@ public class BatchImportController : ControllerBase
 
             if (jobResult == null)
             {
-                _logger.LogWarning("Batch import failed for {Email} - no videos found or access denied", CurrentUser.Email);
-                return BadRequest(new
-                {
-                    error = "Failed to create batch import job. No video files found in the share or access denied. Please check that the share URL is correct and contains video files."
-                });
+                _logger.LogError("Batch import service returned null result for {Email}", CurrentUser.Email);
+                return StatusCode(500, new { error = "Failed to create batch import job (unexpected null result)." });
             }
 
-            _logger.LogInformation("Created batch job: {JobId} with {TotalVideos} videos", 
+            if (jobResult.TryGetValue("_error", out var errFlag) && errFlag is true)
+            {
+                var reason = jobResult.GetValueOrDefault("_reason")?.ToString() ?? "unknown";
+                var detail = jobResult.GetValueOrDefault("_detail")?.ToString();
+                _logger.LogWarning("Batch import failed for {Email}. reason={Reason} detail={Detail}",
+                    CurrentUser.Email, reason, detail);
+
+                return reason switch
+                {
+                    "no_videos_in_share" => BadRequest(new
+                    {
+                        error = "No supported video files found in the share. Verify the share contains files with one of: mp4, avi, mov, wmv, mkv, ts, m4v, flv, webm.",
+                        reason
+                    }),
+                    "share_access_failed" => BadRequest(new
+                    {
+                        error = $"Could not access the share URL. {detail}",
+                        reason
+                    }),
+                    "share_listing_unexpected_error" => StatusCode(502, new
+                    {
+                        error = $"Unexpected error while reading share contents. {detail}",
+                        reason
+                    }),
+                    "db_error" => StatusCode(503, new
+                    {
+                        error = "Database error while saving batch job. Please retry; if the problem persists, contact support.",
+                        reason
+                    }),
+                    "persistence_unexpected_error" => StatusCode(500, new
+                    {
+                        error = "Internal error while saving batch job.",
+                        reason
+                    }),
+                    _ => StatusCode(500, new
+                    {
+                        error = "Failed to create batch import job (unknown reason).",
+                        reason
+                    })
+                };
+            }
+
+            _logger.LogInformation("Created batch job: {JobId} with {TotalVideos} videos",
                 jobResult.GetValueOrDefault("job_id"), jobResult.GetValueOrDefault("total_videos"));
 
             return Ok(new

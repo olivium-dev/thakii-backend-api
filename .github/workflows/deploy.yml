@@ -107,7 +107,13 @@ jobs:
             else
               echo 'INTERNAL_WORKER_SECRET not provided; /internal/* gate will stay dormant.'
             fi
-            grep -q 'INTERNAL__REQUIRE_SECRET' .env || echo 'INTERNAL__REQUIRE_SECRET=false' >> .env
+            # Phase B5 cutover: now that the worker has the same secret,
+            # flip enforcement on. /internal/* will 401 on unsigned calls.
+            if grep -q '^INTERNAL__REQUIRE_SECRET=' .env; then
+              sed -i 's|^INTERNAL__REQUIRE_SECRET=.*|INTERNAL__REQUIRE_SECRET=true|' .env
+            else
+              echo 'INTERNAL__REQUIRE_SECRET=true' >> .env
+            fi
 
             grep -q 'REAPER__ENABLED' .env || echo 'REAPER__ENABLED=true' >> .env
             grep -q 'REAPER__SWEEP_SECONDS' .env || echo 'REAPER__SWEEP_SECONDS=60' >> .env

@@ -23,6 +23,23 @@ public interface IPostgresDbService
     Task<bool> CompleteCancellationAsync(string videoId);
     Task<int> RecoverStaleTasksAsync();
     void RecordWorkerHeartbeat(string workerId, List<string>? activeTaskIds);
+
+    // Phase B3: persist heartbeat to PostgreSQL so the reaper has a real
+    // signal to act on instead of an in-memory dictionary.
+    Task<int> PersistWorkerHeartbeatAsync(string workerId, List<string>? activeTaskIds);
+
+    // Phase B4: reaper sweep + per-task requeue. Returns the list of
+    // (videoId, attempts, action) so the caller can log / refund.
+    Task<List<(string VideoId, int Attempts, string Action)>> RequeueStaleProcessingAsync(
+        TimeSpan heartbeatStale,
+        TimeSpan noHeartbeatGrace,
+        int maxAttempts);
+
+    // Phase B7: admin requeue of an arbitrary video.
+    Task<bool> RequeueVideoAsync(string videoId, string actor);
+
+    // Phase B9: metrics buckets used by /admin/metrics/stuck-tasks.
+    Task<Dictionary<string, int>> GetStuckTaskMetricsAsync();
 }
 
 public class PostgresDbService : IPostgresDbService
@@ -177,11 +194,19 @@ public class PostgresDbService : IPostgresDbService
         await using var conn = new NpgsqlConnection(_connectionString);
         await conn.OpenAsync();
 
-        // Atomically pick up a single task: set status to 'processing' and assign worker
+        // Atomically pick up a single task and durably attribute it to the
+        // calling worker. Writing assigned_worker_id + processing_started_at +
+        // last_heartbeat is what makes the StaleTaskReaperService able to
+        // decide a row is "abandoned" instead of "still running".
         await using var cmd = new NpgsqlCommand(@"
             UPDATE video_tasks
             SET status = 'processing',
                 processing_start = CURRENT_TIMESTAMP,
+                processing_started_at = CURRENT_TIMESTAMP,
+                assigned_worker_id = @workerId,
+                assigned_worker = @workerId,
+                last_heartbeat = CURRENT_TIMESTAMP,
+                assignment_time = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
             WHERE video_id = (
                 SELECT video_id FROM video_tasks
@@ -193,6 +218,7 @@ public class PostgresDbService : IPostgresDbService
             )
             RETURNING *
         ", conn);
+        cmd.Parameters.AddWithValue("workerId", workerId);
 
         await using var reader = await cmd.ExecuteReaderAsync();
         if (await reader.ReadAsync())
@@ -210,7 +236,15 @@ public class PostgresDbService : IPostgresDbService
         await using var conn = new NpgsqlConnection(_connectionString);
         await conn.OpenAsync();
 
-        var updates = new List<string> { "status = @status", "updated_at = CURRENT_TIMESTAMP" };
+        // Every worker-driven update keeps the row "alive" for the reaper.
+        var updates = new List<string>
+        {
+            "status = @status",
+            "updated_at = CURRENT_TIMESTAMP",
+            "last_heartbeat = CURRENT_TIMESTAMP",
+            "assigned_worker_id = @workerId",
+            "assigned_worker = @workerId"
+        };
         var cmd = new NpgsqlCommand();
 
         if (progress.HasValue)
@@ -221,11 +255,18 @@ public class PostgresDbService : IPostgresDbService
             updates.Add("error_message = @errorMessage");
         if (status is "done" or "completed" or "failed")
             updates.Add("processing_end = CURRENT_TIMESTAMP");
+        // A successful completion clears the retry counter so future stuck
+        // detections start fresh if the same video is re-uploaded.
+        if (status is "done" or "completed")
+            updates.Add("attempts = 0");
+        if (status is "failed" && errorMessage != null)
+            updates.Add("last_failure_reason = @errorMessage");
 
         cmd.CommandText = $"UPDATE video_tasks SET {string.Join(", ", updates)} WHERE video_id = @videoId";
         cmd.Connection = conn;
         cmd.Parameters.AddWithValue("status", status);
         cmd.Parameters.AddWithValue("videoId", videoId);
+        cmd.Parameters.AddWithValue("workerId", workerId);
         if (progress.HasValue)
             cmd.Parameters.AddWithValue("progress", progress.Value);
         if (pdfUrl != null)
@@ -298,5 +339,195 @@ public class PostgresDbService : IPostgresDbService
     public void RecordWorkerHeartbeat(string workerId, List<string>? activeTaskIds)
     {
         _workerHeartbeats[workerId] = (DateTime.UtcNow, activeTaskIds ?? new List<string>());
+    }
+
+    public async Task<int> PersistWorkerHeartbeatAsync(string workerId, List<string>? activeTaskIds)
+    {
+        // Refresh last_heartbeat for every task currently attributed to this worker.
+        // If activeTaskIds is non-empty, scope the update to that subset so the
+        // worker can drop tasks from its hot set (e.g. after a crash recovery).
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync();
+
+        var hasActive = activeTaskIds is { Count: > 0 };
+        var sql = hasActive
+            ? @"UPDATE video_tasks
+                SET last_heartbeat = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE assigned_worker_id = @workerId
+                  AND status = 'processing'
+                  AND video_id = ANY(@activeIds)"
+            : @"UPDATE video_tasks
+                SET last_heartbeat = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE assigned_worker_id = @workerId
+                  AND status = 'processing'";
+
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue("workerId", workerId);
+        if (hasActive)
+            cmd.Parameters.AddWithValue("activeIds", activeTaskIds!.ToArray());
+
+        return await cmd.ExecuteNonQueryAsync();
+    }
+
+    public async Task<List<(string VideoId, int Attempts, string Action)>> RequeueStaleProcessingAsync(
+        TimeSpan heartbeatStale,
+        TimeSpan noHeartbeatGrace,
+        int maxAttempts)
+    {
+        var results = new List<(string, int, string)>();
+
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync();
+        await using var tx = await conn.BeginTransactionAsync();
+
+        // Step 1: select stale rows under FOR UPDATE so two reapers
+        // running concurrently don't both process the same row.
+        await using var selectCmd = new NpgsqlCommand(@"
+            SELECT video_id, attempts, last_heartbeat, processing_start, updated_at
+            FROM video_tasks
+            WHERE status = 'processing'
+              AND (
+                   (last_heartbeat IS NOT NULL AND last_heartbeat < NOW() - @heartbeatStale)
+                OR (last_heartbeat IS NULL AND processing_start IS NOT NULL
+                     AND processing_start < NOW() - @noHeartbeatGrace)
+                OR (last_heartbeat IS NULL AND processing_start IS NULL
+                     AND updated_at < NOW() - @noHeartbeatGrace)
+              )
+            FOR UPDATE SKIP LOCKED
+        ", conn, tx);
+        selectCmd.Parameters.AddWithValue("heartbeatStale", heartbeatStale);
+        selectCmd.Parameters.AddWithValue("noHeartbeatGrace", noHeartbeatGrace);
+
+        var stale = new List<(string VideoId, int Attempts)>();
+        await using (var reader = await selectCmd.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                var videoId = reader.GetString(0);
+                var attempts = reader.IsDBNull(1) ? 0 : reader.GetInt32(1);
+                stale.Add((videoId, attempts));
+            }
+        }
+
+        foreach (var (videoId, attempts) in stale)
+        {
+            var nextAttempts = attempts + 1;
+            string action;
+
+            if (nextAttempts > maxAttempts)
+            {
+                action = "failed";
+                await using var failCmd = new NpgsqlCommand(@"
+                    UPDATE video_tasks
+                    SET status = 'failed',
+                        error_message = COALESCE(error_message, 'auto-requeue gave up after ' || @max || ' attempts'),
+                        last_failure_reason = 'auto-requeue gave up after ' || @max || ' attempts',
+                        attempts = @attempts,
+                        processing_end = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE video_id = @videoId
+                ", conn, tx);
+                failCmd.Parameters.AddWithValue("videoId", videoId);
+                failCmd.Parameters.AddWithValue("attempts", nextAttempts);
+                failCmd.Parameters.AddWithValue("max", maxAttempts);
+                await failCmd.ExecuteNonQueryAsync();
+            }
+            else
+            {
+                action = "requeued";
+                await using var requeueCmd = new NpgsqlCommand(@"
+                    UPDATE video_tasks
+                    SET status = 'in_queue',
+                        progress_percent = 0,
+                        processing_start = NULL,
+                        processing_started_at = NULL,
+                        processing_end = NULL,
+                        assigned_worker_id = NULL,
+                        assigned_worker = NULL,
+                        last_heartbeat = NULL,
+                        assignment_time = NULL,
+                        processed_by_worker = NULL,
+                        attempts = @attempts,
+                        last_failure_reason = COALESCE(last_failure_reason, 'auto-requeued: stale processing'),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE video_id = @videoId
+                ", conn, tx);
+                requeueCmd.Parameters.AddWithValue("videoId", videoId);
+                requeueCmd.Parameters.AddWithValue("attempts", nextAttempts);
+                await requeueCmd.ExecuteNonQueryAsync();
+            }
+
+            results.Add((videoId, nextAttempts, action));
+        }
+
+        await tx.CommitAsync();
+        return results;
+    }
+
+    public async Task<bool> RequeueVideoAsync(string videoId, string actor)
+    {
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand(@"
+            UPDATE video_tasks
+            SET status = 'in_queue',
+                progress_percent = 0,
+                error_message = NULL,
+                processing_start = NULL,
+                processing_started_at = NULL,
+                processing_end = NULL,
+                assigned_worker_id = NULL,
+                assigned_worker = NULL,
+                last_heartbeat = NULL,
+                assignment_time = NULL,
+                processed_by_worker = NULL,
+                attempts = COALESCE(attempts, 0) + 1,
+                last_failure_reason = 'manual requeue by ' || @actor,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE video_id = @videoId
+        ", conn);
+        cmd.Parameters.AddWithValue("videoId", videoId);
+        cmd.Parameters.AddWithValue("actor", actor);
+        var rows = await cmd.ExecuteNonQueryAsync();
+        return rows > 0;
+    }
+
+    public async Task<Dictionary<string, int>> GetStuckTaskMetricsAsync()
+    {
+        var metrics = new Dictionary<string, int>
+        {
+            ["processing_no_heartbeat_5m"] = 0,
+            ["processing_no_progress_15m"] = 0,
+            ["in_queue_older_30m"] = 0,
+            ["processing_total"] = 0,
+            ["in_queue_total"] = 0
+        };
+
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT
+              COUNT(*) FILTER (WHERE status='processing'
+                               AND last_heartbeat IS NOT NULL
+                               AND last_heartbeat < NOW() - INTERVAL '5 minutes')        AS processing_no_heartbeat_5m,
+              COUNT(*) FILTER (WHERE status='processing'
+                               AND last_heartbeat IS NULL
+                               AND COALESCE(processing_start, updated_at) < NOW() - INTERVAL '15 minutes') AS processing_no_progress_15m,
+              COUNT(*) FILTER (WHERE status IN ('in_queue','uploaded')
+                               AND created_at < NOW() - INTERVAL '30 minutes')           AS in_queue_older_30m,
+              COUNT(*) FILTER (WHERE status='processing')                                AS processing_total,
+              COUNT(*) FILTER (WHERE status IN ('in_queue','uploaded'))                  AS in_queue_total
+            FROM video_tasks
+        ", conn);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        if (await reader.ReadAsync())
+        {
+            metrics["processing_no_heartbeat_5m"] = Convert.ToInt32(reader.GetValue(0));
+            metrics["processing_no_progress_15m"] = Convert.ToInt32(reader.GetValue(1));
+            metrics["in_queue_older_30m"]        = Convert.ToInt32(reader.GetValue(2));
+            metrics["processing_total"]          = Convert.ToInt32(reader.GetValue(3));
+            metrics["in_queue_total"]            = Convert.ToInt32(reader.GetValue(4));
+        }
+        return metrics;
     }
 }

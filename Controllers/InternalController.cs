@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json.Serialization;
 using ThakiiBackend.Api.Services;
 
 namespace ThakiiBackend.Api.Controllers;
@@ -177,10 +178,12 @@ public class InternalController : ControllerBase
     }
 
     /// <summary>
-    /// Worker API endpoint to send heartbeat.
+    /// Worker API endpoint to send heartbeat. Persists last_heartbeat to
+    /// PostgreSQL for the rows currently attributed to this worker so the
+    /// StaleTaskReaperService has a real liveness signal.
     /// </summary>
     [HttpPost("worker/heartbeat")]
-    public IActionResult Heartbeat([FromBody] HeartbeatRequest? request)
+    public async Task<IActionResult> Heartbeat([FromBody] HeartbeatRequest? request)
     {
         if (!IsWorkerApiEnabled)
             return StatusCode(403, new { error = "Worker API is not enabled" });
@@ -190,8 +193,12 @@ public class InternalController : ControllerBase
 
         try
         {
-            _db.RecordWorkerHeartbeat(request.WorkerId, request.ActiveTaskIds);
-            return Ok(new { success = true });
+            // Worker DTOs in the wild send either active_task_ids or active_tasks;
+            // tolerate both during the rollout.
+            var activeIds = request.EffectiveActiveTaskIds;
+            _db.RecordWorkerHeartbeat(request.WorkerId, activeIds);
+            var rowsTouched = await _db.PersistWorkerHeartbeatAsync(request.WorkerId, activeIds);
+            return Ok(new { success = true, rows_touched = rowsTouched });
         }
         catch (Exception ex)
         {
@@ -331,5 +338,17 @@ public class UpdateWorkerTaskRequest
 public class HeartbeatRequest
 {
     public string? WorkerId { get; set; }
+
+    // Canonical field name; new workers send this.
+    [JsonPropertyName("active_task_ids")]
     public List<string>? ActiveTaskIds { get; set; }
+
+    // Legacy alias used by older worker builds. Kept during the rollout
+    // window so a partial deploy doesn't black out heartbeats.
+    [JsonPropertyName("active_tasks")]
+    public List<string>? ActiveTasksLegacy { get; set; }
+
+    [JsonIgnore]
+    public List<string>? EffectiveActiveTaskIds =>
+        (ActiveTaskIds is { Count: > 0 } a) ? a : ActiveTasksLegacy;
 }

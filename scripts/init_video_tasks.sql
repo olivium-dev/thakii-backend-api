@@ -31,12 +31,30 @@ CREATE TABLE video_tasks (
     cancellation_reason TEXT,
     cancellation_requested BOOLEAN DEFAULT FALSE,
     cancellation_requested_at TIMESTAMP,
-    progress_percent INTEGER DEFAULT 0
+    progress_percent INTEGER DEFAULT 0,
+    -- Worker liveness columns. Written by PickupTaskAsync / heartbeat
+    -- handler and read by StaleTaskReaperService.
+    assigned_worker_id VARCHAR(255),
+    assigned_worker VARCHAR(255),
+    processing_started_at TIMESTAMP,
+    last_heartbeat TIMESTAMP,
+    assignment_time TIMESTAMP,
+    processed_by_worker VARCHAR(255),
+    -- Reaper / retry bookkeeping.
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_failure_reason TEXT
 );
 
 CREATE INDEX idx_video_tasks_user_id ON video_tasks(user_id);
 CREATE INDEX idx_video_tasks_status ON video_tasks(status);
 CREATE INDEX idx_video_tasks_created_at ON video_tasks(created_at DESC);
+-- Partial indexes for the reaper sweep (Phase B4).
+CREATE INDEX idx_video_tasks_processing_heartbeat
+    ON video_tasks(last_heartbeat) WHERE status = 'processing';
+CREATE INDEX idx_video_tasks_processing_start
+    ON video_tasks(processing_start) WHERE status = 'processing';
+CREATE INDEX idx_video_tasks_assigned_worker
+    ON video_tasks(assigned_worker_id) WHERE status = 'processing';
 
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$

@@ -173,6 +173,105 @@ public class AdminController : ControllerBase
         }
     }
 
+    // ========== Stuck Task Recovery (Phase B7+B9) ==========
+
+    /// <summary>
+    /// Manually requeue a single video. Forces status back to 'in_queue',
+    /// clears the worker columns, and bumps the attempts counter.
+    /// </summary>
+    [HttpPost("videos/{videoId}/requeue")]
+    public async Task<IActionResult> RequeueVideo(string videoId)
+    {
+        var check = RequireAdmin();
+        if (check != null) return check;
+
+        if (string.IsNullOrWhiteSpace(videoId))
+            return BadRequest(new { error = "video_id is required" });
+
+        try
+        {
+            var actor = CurrentUser?.Email ?? "admin";
+            var ok = await _db.RequeueVideoAsync(videoId, actor);
+            if (!ok) return NotFound(new { error = "video_id not found" });
+
+            _logger.LogWarning("Admin {Actor} requeued video {VideoId}", actor, videoId);
+            return Ok(new { success = true, video_id = videoId, requeued_by = actor });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error requeueing video {VideoId}", videoId);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Force a reaper sweep right now. Useful in incidents and for tests.
+    /// Honors the same Reaper:* configuration as the background service.
+    /// </summary>
+    [HttpPost("videos/requeue-stuck")]
+    public async Task<IActionResult> RequeueStuck([FromServices] IConfiguration cfg)
+    {
+        var check = RequireAdmin();
+        if (check != null) return check;
+
+        try
+        {
+            var heartbeatStale = TimeSpan.FromSeconds(int.TryParse(
+                Environment.GetEnvironmentVariable("REAPER__HEARTBEAT_STALE_SECONDS")
+                ?? cfg["Reaper:HeartbeatStaleSeconds"], out var hs) ? hs : 300);
+            var noHeartbeatGrace = TimeSpan.FromSeconds(int.TryParse(
+                Environment.GetEnvironmentVariable("REAPER__NO_HEARTBEAT_GRACE_SECONDS")
+                ?? cfg["Reaper:NoHeartbeatGraceSeconds"], out var ng) ? ng : 900);
+            var maxAttempts = int.TryParse(
+                Environment.GetEnvironmentVariable("REAPER__MAX_ATTEMPTS")
+                ?? cfg["Reaper:MaxAttempts"], out var ma) ? Math.Max(ma, 1) : 3;
+
+            var results = await _db.RequeueStaleProcessingAsync(heartbeatStale, noHeartbeatGrace, maxAttempts);
+            var requeued = results.Count(r => r.Action == "requeued");
+            var failed = results.Count(r => r.Action == "failed");
+
+            _logger.LogWarning(
+                "Manual reaper sweep by {Actor}: total={Total}, requeued={Requeued}, failed={Failed}",
+                CurrentUser?.Email ?? "admin", results.Count, requeued, failed);
+
+            return Ok(new
+            {
+                success = true,
+                total = results.Count,
+                requeued,
+                failed,
+                rows = results.Select(r => new { video_id = r.VideoId, attempts = r.Attempts, action = r.Action })
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error forcing reaper sweep");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Stuck-task buckets used for monitoring / dashboards.
+    /// Returns counts that should hover near zero in healthy steady state.
+    /// </summary>
+    [HttpGet("metrics/stuck-tasks")]
+    public async Task<IActionResult> GetStuckTaskMetrics()
+    {
+        var check = RequireAdmin();
+        if (check != null) return check;
+
+        try
+        {
+            var metrics = await _db.GetStuckTaskMetricsAsync();
+            return Ok(metrics);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching stuck task metrics");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
     // ========== Test Notification ==========
 
     [HttpPost("test-notification")]

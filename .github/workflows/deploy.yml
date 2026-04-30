@@ -61,6 +61,9 @@ jobs:
           SERVICE_NAME: ${{ env.SERVICE_NAME }}
           # Deploy the branch that triggered this run (e.g. main on push, or the branch chosen for workflow_dispatch)
           DEPLOY_BRANCH: ${{ github.ref_name }}
+          # Phase B5: shared secret used by the worker to authenticate /internal/* calls.
+          # Same value must be set in the worker deploy as INTERNAL_WORKER_SECRET.
+          INTERNAL_WORKER_SECRET: ${{ secrets.THAKII_INTERNAL_WORKER_SECRET }}
         run: |
           ssh thakii-server "
             set -e
@@ -90,6 +93,27 @@ jobs:
             sed -i 's|PRIMARY_WORKER_URL=.*|PRIMARY_WORKER_URL=https://thakii-3.fanusdigital.site/thakii-worker|' .env
             sed -i 's|FALLBACK_WORKER_URL=.*|FALLBACK_WORKER_URL=https://thakii-02.fanusdigital.site/thakii-worker|' .env
             sed -i 's|ENABLE_WORKER_API=.*|ENABLE_WORKER_API=true|' .env
+
+            # Phase B5: shared secret for /internal/* gating. Empty secret =
+            # middleware stays dormant (safe default); non-empty + RequireSecret=true
+            # rejects unsigned worker calls with 401.
+            if [ -n \"$INTERNAL_WORKER_SECRET\" ]; then
+              if grep -q '^INTERNAL_WORKER_SECRET=' .env; then
+                sed -i \"s|^INTERNAL_WORKER_SECRET=.*|INTERNAL_WORKER_SECRET=$INTERNAL_WORKER_SECRET|\" .env
+              else
+                echo \"INTERNAL_WORKER_SECRET=$INTERNAL_WORKER_SECRET\" >> .env
+              fi
+              echo 'Internal worker secret configured.'
+            else
+              echo 'INTERNAL_WORKER_SECRET not provided; /internal/* gate will stay dormant.'
+            fi
+            grep -q 'INTERNAL__REQUIRE_SECRET' .env || echo 'INTERNAL__REQUIRE_SECRET=false' >> .env
+
+            grep -q 'REAPER__ENABLED' .env || echo 'REAPER__ENABLED=true' >> .env
+            grep -q 'REAPER__SWEEP_SECONDS' .env || echo 'REAPER__SWEEP_SECONDS=60' >> .env
+            grep -q 'REAPER__HEARTBEAT_STALE_SECONDS' .env || echo 'REAPER__HEARTBEAT_STALE_SECONDS=300' >> .env
+            grep -q 'REAPER__NO_HEARTBEAT_GRACE_SECONDS' .env || echo 'REAPER__NO_HEARTBEAT_GRACE_SECONDS=900' >> .env
+            grep -q 'REAPER__MAX_ATTEMPTS' .env || echo 'REAPER__MAX_ATTEMPTS=3' >> .env
 
             echo '🔧 Configuring systemd EnvironmentFile...'
             if ! sudo grep -q 'EnvironmentFile=' /etc/systemd/system/$SERVICE_NAME.service 2>/dev/null; then

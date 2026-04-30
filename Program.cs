@@ -68,6 +68,9 @@ builder.Services.AddSingleton<IWorkerManagerService, WorkerManagerService>();
 builder.Services.AddSingleton<IBatchImportService, BatchImportService>();
 builder.Services.AddSingleton<ITaskUpdateHubService, TaskUpdateHubService>();
 
+// Phase B4: hosted reaper that requeues stuck `processing` rows.
+builder.Services.AddHostedService<StaleTaskReaperService>();
+
 builder.Services.AddSingleton<SocketIoServer>();
 builder.Services.AddSignalR();
 
@@ -203,6 +206,10 @@ app.UseCorrelationId();
 app.UseCors();
 app.UseRateLimiter();
 app.UseMiddleware<SocketIoMiddleware>();
+// Phase B5: gate /internal/* with the shared worker secret. Two-phase rollout:
+// dormant when WorkerSecret is empty, audit-only when RequireSecret=false,
+// enforcing 401s when RequireSecret=true.
+app.UseInternalApiGate();
 app.UseAuthMiddleware();
 app.MapControllers();
 app.MapHub<TaskUpdateHub>("/hubs/task-update");

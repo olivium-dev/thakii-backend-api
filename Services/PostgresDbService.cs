@@ -189,15 +189,27 @@ public class PostgresDbService : IPostgresDbService
 
     // ========== Worker API Methods ==========
 
+    /// <summary>
+    /// Phase 2: compute an adaptive timeout for a task based on its stored
+    /// video_duration_seconds.  Formula: clamp(duration * 0.6 + 600) * 1.5,
+    /// within [900, 14400] seconds.  Returns null when duration is unknown
+    /// so the worker falls back to its env-level default.
+    /// </summary>
+    public static int? ComputeTaskTimeoutSeconds(int? durationSeconds)
+    {
+        if (durationSeconds is null or <= 0)
+            return null;
+
+        var expected = durationSeconds.Value * 0.6 + 600;
+        var withSafety = expected * 1.5;
+        return (int)Math.Clamp(withSafety, 900, 14400);
+    }
+
     public async Task<Dictionary<string, object?>?> PickupTaskAsync(string workerId, int workerCapacity = 4)
     {
         await using var conn = new NpgsqlConnection(_connectionString);
         await conn.OpenAsync();
 
-        // Atomically pick up a single task and durably attribute it to the
-        // calling worker. Writing assigned_worker_id + processing_started_at +
-        // last_heartbeat is what makes the StaleTaskReaperService able to
-        // decide a row is "abandoned" instead of "still running".
         await using var cmd = new NpgsqlCommand(@"
             UPDATE video_tasks
             SET status = 'processing',
@@ -225,6 +237,15 @@ public class PostgresDbService : IPostgresDbService
         {
             var task = ToDict(reader);
             _logger.LogInformation("Worker {WorkerId} picked up task {VideoId}", workerId, task.GetValueOrDefault("video_id"));
+
+            // Phase 2: attach adaptive timeout hint for the worker
+            int? durationSec = null;
+            if (task.TryGetValue("video_duration_seconds", out var raw) && raw is int d)
+                durationSec = d;
+            var hint = ComputeTaskTimeoutSeconds(durationSec);
+            if (hint.HasValue)
+                task["timeout_seconds_hint"] = hint.Value;
+
             return task;
         }
         return null;

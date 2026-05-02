@@ -42,7 +42,10 @@ CREATE TABLE video_tasks (
     processed_by_worker VARCHAR(255),
     -- Reaper / retry bookkeeping.
     attempts INTEGER NOT NULL DEFAULT 0,
-    last_failure_reason TEXT
+    last_failure_reason TEXT,
+    -- Phase 2: adaptive timeout. Populated at upload or batch import via
+    -- RemoteVideoDurationService; NULL means "use global default".
+    video_duration_seconds INTEGER
 );
 
 CREATE INDEX idx_video_tasks_user_id ON video_tasks(user_id);

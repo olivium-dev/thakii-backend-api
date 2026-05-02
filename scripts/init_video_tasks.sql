@@ -49,7 +49,14 @@ CREATE TABLE video_tasks (
     -- Phase 3: fine-grained progress from worker subprocess.
     progress_phase           VARCHAR(32),
     progress_detail          JSONB,
-    last_forward_progress_at TIMESTAMP
+    last_forward_progress_at TIMESTAMP,
+    -- Phase 8: per-stage timing columns.
+    download_seconds   INTEGER,
+    audio_seconds      INTEGER,
+    frames_seconds     INTEGER,
+    transcribe_seconds INTEGER,
+    pdf_seconds        INTEGER,
+    upload_seconds     INTEGER
 );
 
 CREATE INDEX idx_video_tasks_user_id ON video_tasks(user_id);

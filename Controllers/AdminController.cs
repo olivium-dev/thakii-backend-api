@@ -272,6 +272,54 @@ public class AdminController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Phase 8: per-stage timing breakdown for a single video.
+    /// </summary>
+    [HttpGet("videos/{videoId}/timeline")]
+    public async Task<IActionResult> GetVideoTimeline(string videoId)
+    {
+        var check = RequireAdmin();
+        if (check != null) return check;
+
+        try
+        {
+            var task = await _db.GetVideoTaskAsync(videoId);
+            if (task == null)
+                return NotFound(new { error = "Video not found" });
+
+            return Ok(new
+            {
+                video_id = videoId,
+                status = task.GetValueOrDefault("status"),
+                created_at = task.GetValueOrDefault("created_at"),
+                processing_start = task.GetValueOrDefault("processing_start"),
+                processing_end = task.GetValueOrDefault("processing_end"),
+                progress_phase = task.GetValueOrDefault("progress_phase"),
+                progress_percent = task.GetValueOrDefault("progress_percent"),
+                attempts = task.GetValueOrDefault("attempts"),
+                last_failure_reason = task.GetValueOrDefault("last_failure_reason"),
+                video_duration_seconds = task.GetValueOrDefault("video_duration_seconds"),
+                stage_timings = new
+                {
+                    download_seconds = task.GetValueOrDefault("download_seconds"),
+                    audio_seconds = task.GetValueOrDefault("audio_seconds"),
+                    frames_seconds = task.GetValueOrDefault("frames_seconds"),
+                    transcribe_seconds = task.GetValueOrDefault("transcribe_seconds"),
+                    pdf_seconds = task.GetValueOrDefault("pdf_seconds"),
+                    upload_seconds = task.GetValueOrDefault("upload_seconds"),
+                },
+                last_heartbeat = task.GetValueOrDefault("last_heartbeat"),
+                last_forward_progress_at = task.GetValueOrDefault("last_forward_progress_at"),
+                assigned_worker_id = task.GetValueOrDefault("assigned_worker_id"),
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching timeline for {VideoId}", videoId);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
     // ========== Test Notification ==========
 
     [HttpPost("test-notification")]

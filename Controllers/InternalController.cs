@@ -177,7 +177,8 @@ public class InternalController : ControllerBase
 
             var success = await _db.UpdateWorkerTaskAsync(
                 request.VideoId, request.WorkerId, request.Status,
-                request.Progress, request.PdfUrl, request.ErrorMessage);
+                request.Progress, request.PdfUrl, request.ErrorMessage,
+                request.StageDurations);
 
             if (success && request.Status == "failed")
             {
@@ -388,6 +389,9 @@ public class UpdateWorkerTaskRequest
     public int? Progress { get; set; }
     public string? PdfUrl { get; set; }
     public string? ErrorMessage { get; set; }
+
+    [JsonPropertyName("stage_durations")]
+    public Dictionary<string, int>? StageDurations { get; set; }
 }
 
 public class ProgressUpdateRequest

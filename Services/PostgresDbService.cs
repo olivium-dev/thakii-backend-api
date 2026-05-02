@@ -17,7 +17,7 @@ public interface IPostgresDbService
 
     // Worker API methods
     Task<Dictionary<string, object?>?> PickupTaskAsync(string workerId, int workerCapacity = 4);
-    Task<bool> UpdateWorkerTaskAsync(string videoId, string workerId, string status, int? progress = null, string? pdfUrl = null, string? errorMessage = null);
+    Task<bool> UpdateWorkerTaskAsync(string videoId, string workerId, string status, int? progress = null, string? pdfUrl = null, string? errorMessage = null, Dictionary<string, int>? stageDurations = null);
     Task<List<Dictionary<string, object?>>> GetPendingTasksAsync(int limit = 10);
     Task<bool> IsTaskCancellationRequestedAsync(string videoId);
     Task<bool> CompleteCancellationAsync(string videoId);
@@ -260,7 +260,8 @@ public class PostgresDbService : IPostgresDbService
     }
 
     public async Task<bool> UpdateWorkerTaskAsync(string videoId, string workerId, string status,
-        int? progress = null, string? pdfUrl = null, string? errorMessage = null)
+        int? progress = null, string? pdfUrl = null, string? errorMessage = null,
+        Dictionary<string, int>? stageDurations = null)
     {
         await using var conn = new NpgsqlConnection(_connectionString);
         await conn.OpenAsync();
@@ -290,6 +291,30 @@ public class PostgresDbService : IPostgresDbService
             updates.Add("attempts = 0");
         if (status is "failed" && errorMessage != null)
             updates.Add("last_failure_reason = @errorMessage");
+
+        // Phase 8: persist per-stage timing columns
+        if (stageDurations != null)
+        {
+            foreach (var (key, val) in stageDurations)
+            {
+                var col = key switch
+                {
+                    "download" => "download_seconds",
+                    "audio" => "audio_seconds",
+                    "frames" => "frames_seconds",
+                    "transcribe" => "transcribe_seconds",
+                    "pdf" => "pdf_seconds",
+                    "upload" => "upload_seconds",
+                    _ => null,
+                };
+                if (col != null)
+                {
+                    var paramName = $"@sd_{key}";
+                    updates.Add($"{col} = {paramName}");
+                    cmd.Parameters.AddWithValue(paramName.TrimStart('@'), val);
+                }
+            }
+        }
 
         cmd.CommandText = $"UPDATE video_tasks SET {string.Join(", ", updates)} WHERE video_id = @videoId";
         cmd.Connection = conn;

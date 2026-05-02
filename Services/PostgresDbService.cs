@@ -33,7 +33,9 @@ public interface IPostgresDbService
     Task<List<(string VideoId, int Attempts, string Action)>> RequeueStaleProcessingAsync(
         TimeSpan heartbeatStale,
         TimeSpan noHeartbeatGrace,
-        int maxAttempts);
+        int maxAttempts,
+        TimeSpan? noForwardProgress = null,
+        TimeSpan? hardCeiling = null);
 
     // Phase B7: admin requeue of an arbitrary video.
     Task<bool> RequeueVideoAsync(string videoId, string actor);
@@ -396,31 +398,48 @@ public class PostgresDbService : IPostgresDbService
     public async Task<List<(string VideoId, int Attempts, string Action)>> RequeueStaleProcessingAsync(
         TimeSpan heartbeatStale,
         TimeSpan noHeartbeatGrace,
-        int maxAttempts)
+        int maxAttempts,
+        TimeSpan? noForwardProgress = null,
+        TimeSpan? hardCeiling = null)
     {
         var results = new List<(string, int, string)>();
+        var useForwardProgress = noForwardProgress.HasValue;
+        var effectiveNoFwdProgress = noForwardProgress ?? TimeSpan.FromMinutes(15);
+        var effectiveHardCeiling = hardCeiling ?? TimeSpan.FromHours(4);
 
         await using var conn = new NpgsqlConnection(_connectionString);
         await conn.OpenAsync();
         await using var tx = await conn.BeginTransactionAsync();
 
-        // Step 1: select stale rows under FOR UPDATE so two reapers
-        // running concurrently don't both process the same row.
+        // Phase 4: smarter predicate. A row is reaped when:
+        //   (heartbeat stale AND no forward progress) OR hard ceiling exceeded
+        // When UseForwardProgress is off, falls back to heartbeat-only logic.
         await using var selectCmd = new NpgsqlCommand(@"
-            SELECT video_id, attempts, last_heartbeat, processing_start, updated_at
+            SELECT video_id, attempts, last_heartbeat, processing_start, updated_at, last_forward_progress_at
             FROM video_tasks
             WHERE status = 'processing'
               AND (
-                   (last_heartbeat IS NOT NULL AND last_heartbeat < NOW() - @heartbeatStale)
+                   (
+                     (last_heartbeat IS NOT NULL AND last_heartbeat < NOW() - @heartbeatStale)
+                     AND (@useForwardProgress = FALSE
+                          OR last_forward_progress_at IS NULL
+                          OR last_forward_progress_at < NOW() - @noForwardProgress)
+                     AND (processing_start IS NULL OR processing_start < NOW() - @noHeartbeatGrace)
+                   )
                 OR (last_heartbeat IS NULL AND processing_start IS NOT NULL
                      AND processing_start < NOW() - @noHeartbeatGrace)
                 OR (last_heartbeat IS NULL AND processing_start IS NULL
                      AND updated_at < NOW() - @noHeartbeatGrace)
+                OR (processing_start IS NOT NULL
+                     AND processing_start < NOW() - @hardCeiling)
               )
             FOR UPDATE SKIP LOCKED
         ", conn, tx);
         selectCmd.Parameters.AddWithValue("heartbeatStale", heartbeatStale);
         selectCmd.Parameters.AddWithValue("noHeartbeatGrace", noHeartbeatGrace);
+        selectCmd.Parameters.AddWithValue("useForwardProgress", useForwardProgress);
+        selectCmd.Parameters.AddWithValue("noForwardProgress", effectiveNoFwdProgress);
+        selectCmd.Parameters.AddWithValue("hardCeiling", effectiveHardCeiling);
 
         var stale = new List<(string VideoId, int Attempts)>();
         await using (var reader = await selectCmd.ExecuteReaderAsync())
@@ -471,6 +490,9 @@ public class PostgresDbService : IPostgresDbService
                         last_heartbeat = NULL,
                         assignment_time = NULL,
                         processed_by_worker = NULL,
+                        progress_phase = NULL,
+                        progress_detail = NULL,
+                        last_forward_progress_at = NULL,
                         attempts = @attempts,
                         last_failure_reason = COALESCE(last_failure_reason, 'auto-requeued: stale processing'),
                         updated_at = CURRENT_TIMESTAMP

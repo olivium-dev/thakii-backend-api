@@ -62,11 +62,27 @@ public class StaleTaskReaperService : BackgroundService
             Environment.GetEnvironmentVariable("REAPER__MAX_ATTEMPTS")
             ?? _config["Reaper:MaxAttempts"], out var v) ? Math.Max(v, 1) : 3;
 
+    private bool UseForwardProgress =>
+        (Environment.GetEnvironmentVariable("REAPER__USE_FORWARD_PROGRESS")
+         ?? _config["Reaper:UseForwardProgress"]
+         ?? "true").Equals("true", StringComparison.OrdinalIgnoreCase);
+
+    private TimeSpan NoForwardProgressWindow =>
+        TimeSpan.FromSeconds(int.TryParse(
+            Environment.GetEnvironmentVariable("REAPER__NO_FORWARD_PROGRESS_SECONDS")
+            ?? _config["Reaper:NoForwardProgressSeconds"], out var v) ? Math.Max(v, 60) : 900);
+
+    private TimeSpan HardCeiling =>
+        TimeSpan.FromSeconds(int.TryParse(
+            Environment.GetEnvironmentVariable("REAPER__HARD_CEILING_SECONDS")
+            ?? _config["Reaper:HardCeilingSeconds"], out var v) ? Math.Max(v, 600) : 14400);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
-            "StaleTaskReaperService starting. enabled={Enabled}, sweep={Sweep}s, heartbeatStale={HbStale}s, noHbGrace={NoHbGrace}s, maxAttempts={MaxAttempts}",
-            Enabled, SweepInterval.TotalSeconds, HeartbeatStale.TotalSeconds, NoHeartbeatGrace.TotalSeconds, MaxAttempts);
+            "StaleTaskReaperService starting. enabled={Enabled}, sweep={Sweep}s, heartbeatStale={HbStale}s, noHbGrace={NoHbGrace}s, maxAttempts={MaxAttempts}, forwardProgress={FP}({FPSec}s), hardCeiling={HC}s",
+            Enabled, SweepInterval.TotalSeconds, HeartbeatStale.TotalSeconds, NoHeartbeatGrace.TotalSeconds, MaxAttempts,
+            UseForwardProgress, NoForwardProgressWindow.TotalSeconds, HardCeiling.TotalSeconds);
 
         // Tiny stagger so multiple replicas (if ever) don't hammer the DB at the same instant.
         try { await Task.Delay(TimeSpan.FromSeconds(Random.Shared.Next(5, 15)), stoppingToken); }
@@ -107,7 +123,10 @@ public class StaleTaskReaperService : BackgroundService
         var db = scope.ServiceProvider.GetRequiredService<IPostgresDbService>();
         var refundService = scope.ServiceProvider.GetService<IVideoCreditRefundService>();
 
-        var results = await db.RequeueStaleProcessingAsync(HeartbeatStale, NoHeartbeatGrace, MaxAttempts);
+        var results = await db.RequeueStaleProcessingAsync(
+            HeartbeatStale, NoHeartbeatGrace, MaxAttempts,
+            noForwardProgress: UseForwardProgress ? NoForwardProgressWindow : null,
+            hardCeiling: HardCeiling);
         if (results.Count == 0)
         {
             _logger.LogDebug("Reaper sweep: no stale processing rows");

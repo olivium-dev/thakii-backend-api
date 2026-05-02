@@ -45,7 +45,11 @@ CREATE TABLE video_tasks (
     last_failure_reason TEXT,
     -- Phase 2: adaptive timeout. Populated at upload or batch import via
     -- RemoteVideoDurationService; NULL means "use global default".
-    video_duration_seconds INTEGER
+    video_duration_seconds INTEGER,
+    -- Phase 3: fine-grained progress from worker subprocess.
+    progress_phase           VARCHAR(32),
+    progress_detail          JSONB,
+    last_forward_progress_at TIMESTAMP
 );
 
 CREATE INDEX idx_video_tasks_user_id ON video_tasks(user_id);

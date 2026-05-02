@@ -98,6 +98,33 @@ public class InternalController : ControllerBase
     }
 
     /// <summary>
+    /// Phase 3: worker reports fine-grained progress (phase + detail JSON)
+    /// without changing the task status.
+    /// </summary>
+    [HttpPost("worker/progress")]
+    public async Task<IActionResult> ReportProgress([FromBody] ProgressUpdateRequest? request)
+    {
+        if (!IsWorkerApiEnabled)
+            return StatusCode(403, new { error = "Worker API is not enabled" });
+
+        if (request == null || string.IsNullOrEmpty(request.VideoId) ||
+            string.IsNullOrEmpty(request.Phase))
+            return BadRequest(new { error = "video_id and phase are required" });
+
+        try
+        {
+            var ok = await _db.RecordTaskProgressAsync(
+                request.VideoId, request.Phase, request.ProgressDetail);
+            return Ok(new { success = ok });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error recording progress for {VideoId}", request.VideoId);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Worker API endpoint to atomically pick up a single task.
     /// </summary>
     [HttpPost("worker/pickup-task")]
@@ -333,6 +360,21 @@ public class UpdateWorkerTaskRequest
     public int? Progress { get; set; }
     public string? PdfUrl { get; set; }
     public string? ErrorMessage { get; set; }
+}
+
+public class ProgressUpdateRequest
+{
+    [JsonPropertyName("video_id")]
+    public string? VideoId { get; set; }
+
+    [JsonPropertyName("worker_id")]
+    public string? WorkerId { get; set; }
+
+    [JsonPropertyName("phase")]
+    public string? Phase { get; set; }
+
+    [JsonPropertyName("progress_detail")]
+    public string? ProgressDetail { get; set; }
 }
 
 public class HeartbeatRequest

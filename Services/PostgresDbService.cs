@@ -38,6 +38,9 @@ public interface IPostgresDbService
     // Phase B7: admin requeue of an arbitrary video.
     Task<bool> RequeueVideoAsync(string videoId, string actor);
 
+    // Phase 3: fine-grained progress from the worker subprocess.
+    Task<bool> RecordTaskProgressAsync(string videoId, string phase, string? detailJson);
+
     // Phase B9: metrics buckets used by /admin/metrics/stuck-tasks.
     Task<Dictionary<string, int>> GetStuckTaskMetricsAsync();
 }
@@ -550,5 +553,65 @@ public class PostgresDbService : IPostgresDbService
             metrics["in_queue_total"]            = Convert.ToInt32(reader.GetValue(4));
         }
         return metrics;
+    }
+
+    /// <summary>
+    /// Phase 3: record fine-grained progress from the worker without
+    /// touching status. Sets last_forward_progress_at = NOW() server-side.
+    /// Also synthesises progress_percent for backward-compat with frontend.
+    /// </summary>
+    public async Task<bool> RecordTaskProgressAsync(string videoId, string phase, string? detailJson)
+    {
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync();
+
+        // Synthesise a progress_percent from the phase + detail so the existing
+        // frontend progress bar keeps moving smoothly.
+        int? syntheticPercent = null;
+        if (phase == "transcribe" && detailJson != null)
+        {
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(detailJson);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("audio_seconds_done", out var doneProp) &&
+                    root.TryGetProperty("audio_seconds_total", out var totalProp))
+                {
+                    var done = doneProp.GetDouble();
+                    var total = totalProp.GetDouble();
+                    if (total > 0)
+                        syntheticPercent = 30 + (int)(50.0 * done / total);
+                }
+            }
+            catch { /* best effort */ }
+        }
+        else if (phase == "download")
+            syntheticPercent = 10;
+        else if (phase == "audio")
+            syntheticPercent = 25;
+        else if (phase == "frames")
+            syntheticPercent = 28;
+        else if (phase == "pdf")
+            syntheticPercent = 82;
+        else if (phase == "upload")
+            syntheticPercent = 90;
+
+        var sql = @"
+            UPDATE video_tasks
+            SET progress_phase = @phase,
+                progress_detail = @detail::jsonb,
+                last_forward_progress_at = NOW()
+                " + (syntheticPercent.HasValue ? ", progress_percent = @pct" : "") + @"
+            WHERE video_id = @vid AND status = 'processing'";
+
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue("phase", phase);
+        cmd.Parameters.AddWithValue("detail", (object?)detailJson ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("vid", videoId);
+        if (syntheticPercent.HasValue)
+            cmd.Parameters.AddWithValue("pct", syntheticPercent.Value);
+
+        var rows = await cmd.ExecuteNonQueryAsync();
+        return rows > 0;
     }
 }

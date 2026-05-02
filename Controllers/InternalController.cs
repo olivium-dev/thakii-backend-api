@@ -235,6 +235,34 @@ public class InternalController : ControllerBase
     }
 
     /// <summary>
+    /// Phase 7: peek the next task candidate without committing.  The
+    /// worker uses this to prefetch the download while transcribing the
+    /// current task.  Read-only — no row update.
+    /// </summary>
+    [HttpPost("worker/peek-next")]
+    public async Task<IActionResult> PeekNext([FromBody] PickupTaskRequest? request)
+    {
+        if (!IsWorkerApiEnabled)
+            return StatusCode(403, new { error = "Worker API is not enabled" });
+
+        if (request == null || string.IsNullOrEmpty(request.WorkerId))
+            return BadRequest(new { error = "worker_id is required" });
+
+        try
+        {
+            var task = await _db.PeekNextTaskAsync();
+            if (task != null)
+                return Ok(new { success = true, task });
+            return NoContent();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in peek-next");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Worker API endpoint to recover stale tasks.
     /// </summary>
     [HttpPost("worker/recover-stale-tasks")]

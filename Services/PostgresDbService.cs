@@ -43,6 +43,9 @@ public interface IPostgresDbService
     // Phase 3: fine-grained progress from the worker subprocess.
     Task<bool> RecordTaskProgressAsync(string videoId, string phase, string? detailJson);
 
+    // Phase 7: read-only peek at the next task candidate (no row update).
+    Task<Dictionary<string, object?>?> PeekNextTaskAsync();
+
     // Phase B9: metrics buckets used by /admin/metrics/stuck-tasks.
     Task<Dictionary<string, int>> GetStuckTaskMetricsAsync();
 }
@@ -575,6 +578,29 @@ public class PostgresDbService : IPostgresDbService
             metrics["in_queue_total"]            = Convert.ToInt32(reader.GetValue(4));
         }
         return metrics;
+    }
+
+    /// <summary>
+    /// Phase 7: read-only peek at the next pickup candidate.  No row update,
+    /// no FOR UPDATE lock.  Used by the worker prefetch thread to download
+    /// the next video while transcribing the current one.
+    /// </summary>
+    public async Task<Dictionary<string, object?>?> PeekNextTaskAsync()
+    {
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync();
+        await using var cmd = new NpgsqlCommand(@"
+            SELECT * FROM video_tasks
+            WHERE status IN ('in_queue', 'uploaded')
+              AND (cancelled = FALSE OR cancelled IS NULL)
+            ORDER BY created_at ASC
+            LIMIT 1
+        ", conn);
+
+        await using var reader = await cmd.ExecuteReaderAsync();
+        if (await reader.ReadAsync())
+            return ToDict(reader);
+        return null;
     }
 
     /// <summary>

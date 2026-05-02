@@ -320,6 +320,31 @@ public class AdminController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Phase 10: force-fail a specific video task.
+    /// </summary>
+    [HttpPost("videos/{videoId}/force-fail")]
+    public async Task<IActionResult> ForceFail(string videoId, [FromBody] ForceFailRequest? request)
+    {
+        var check = RequireAdmin();
+        if (check != null) return check;
+
+        try
+        {
+            var reason = request?.Reason ?? "admin force-fail";
+            var ok = await _db.UpdateWorkerTaskAsync(videoId, "admin", "failed",
+                errorMessage: reason);
+            if (ok)
+                return Ok(new { success = true, video_id = videoId, reason });
+            return NotFound(new { error = "Video not found or already in terminal state" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error force-failing {VideoId}", videoId);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
     // ========== Test Notification ==========
 
     [HttpPost("test-notification")]
@@ -807,4 +832,9 @@ public class UpdateRecipientsRequest
 public class SingleRecipientRequest
 {
     public string? Email { get; set; }
+}
+
+public class ForceFailRequest
+{
+    public string? Reason { get; set; }
 }

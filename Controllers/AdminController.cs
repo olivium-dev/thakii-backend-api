@@ -173,6 +173,178 @@ public class AdminController : ControllerBase
         }
     }
 
+    // ========== Stuck Task Recovery (Phase B7+B9) ==========
+
+    /// <summary>
+    /// Manually requeue a single video. Forces status back to 'in_queue',
+    /// clears the worker columns, and bumps the attempts counter.
+    /// </summary>
+    [HttpPost("videos/{videoId}/requeue")]
+    public async Task<IActionResult> RequeueVideo(string videoId)
+    {
+        var check = RequireAdmin();
+        if (check != null) return check;
+
+        if (string.IsNullOrWhiteSpace(videoId))
+            return BadRequest(new { error = "video_id is required" });
+
+        try
+        {
+            var actor = CurrentUser?.Email ?? "admin";
+            var ok = await _db.RequeueVideoAsync(videoId, actor);
+            if (!ok) return NotFound(new { error = "video_id not found" });
+
+            _logger.LogWarning("Admin {Actor} requeued video {VideoId}", actor, videoId);
+            return Ok(new { success = true, video_id = videoId, requeued_by = actor });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error requeueing video {VideoId}", videoId);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Force a reaper sweep right now. Useful in incidents and for tests.
+    /// Honors the same Reaper:* configuration as the background service.
+    /// </summary>
+    [HttpPost("videos/requeue-stuck")]
+    public async Task<IActionResult> RequeueStuck([FromServices] IConfiguration cfg)
+    {
+        var check = RequireAdmin();
+        if (check != null) return check;
+
+        try
+        {
+            var heartbeatStale = TimeSpan.FromSeconds(int.TryParse(
+                Environment.GetEnvironmentVariable("REAPER__HEARTBEAT_STALE_SECONDS")
+                ?? cfg["Reaper:HeartbeatStaleSeconds"], out var hs) ? hs : 300);
+            var noHeartbeatGrace = TimeSpan.FromSeconds(int.TryParse(
+                Environment.GetEnvironmentVariable("REAPER__NO_HEARTBEAT_GRACE_SECONDS")
+                ?? cfg["Reaper:NoHeartbeatGraceSeconds"], out var ng) ? ng : 900);
+            var maxAttempts = int.TryParse(
+                Environment.GetEnvironmentVariable("REAPER__MAX_ATTEMPTS")
+                ?? cfg["Reaper:MaxAttempts"], out var ma) ? Math.Max(ma, 1) : 3;
+
+            var results = await _db.RequeueStaleProcessingAsync(heartbeatStale, noHeartbeatGrace, maxAttempts);
+            var requeued = results.Count(r => r.Action == "requeued");
+            var failed = results.Count(r => r.Action == "failed");
+
+            _logger.LogWarning(
+                "Manual reaper sweep by {Actor}: total={Total}, requeued={Requeued}, failed={Failed}",
+                CurrentUser?.Email ?? "admin", results.Count, requeued, failed);
+
+            return Ok(new
+            {
+                success = true,
+                total = results.Count,
+                requeued,
+                failed,
+                rows = results.Select(r => new { video_id = r.VideoId, attempts = r.Attempts, action = r.Action })
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error forcing reaper sweep");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Stuck-task buckets used for monitoring / dashboards.
+    /// Returns counts that should hover near zero in healthy steady state.
+    /// </summary>
+    [HttpGet("metrics/stuck-tasks")]
+    public async Task<IActionResult> GetStuckTaskMetrics()
+    {
+        var check = RequireAdmin();
+        if (check != null) return check;
+
+        try
+        {
+            var metrics = await _db.GetStuckTaskMetricsAsync();
+            return Ok(metrics);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching stuck task metrics");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Phase 8: per-stage timing breakdown for a single video.
+    /// </summary>
+    [HttpGet("videos/{videoId}/timeline")]
+    public async Task<IActionResult> GetVideoTimeline(string videoId)
+    {
+        var check = RequireAdmin();
+        if (check != null) return check;
+
+        try
+        {
+            var task = await _db.GetVideoTaskAsync(videoId);
+            if (task == null)
+                return NotFound(new { error = "Video not found" });
+
+            return Ok(new
+            {
+                video_id = videoId,
+                status = task.GetValueOrDefault("status"),
+                created_at = task.GetValueOrDefault("created_at"),
+                processing_start = task.GetValueOrDefault("processing_start"),
+                processing_end = task.GetValueOrDefault("processing_end"),
+                progress_phase = task.GetValueOrDefault("progress_phase"),
+                progress_percent = task.GetValueOrDefault("progress_percent"),
+                attempts = task.GetValueOrDefault("attempts"),
+                last_failure_reason = task.GetValueOrDefault("last_failure_reason"),
+                video_duration_seconds = task.GetValueOrDefault("video_duration_seconds"),
+                stage_timings = new
+                {
+                    download_seconds = task.GetValueOrDefault("download_seconds"),
+                    audio_seconds = task.GetValueOrDefault("audio_seconds"),
+                    frames_seconds = task.GetValueOrDefault("frames_seconds"),
+                    transcribe_seconds = task.GetValueOrDefault("transcribe_seconds"),
+                    pdf_seconds = task.GetValueOrDefault("pdf_seconds"),
+                    upload_seconds = task.GetValueOrDefault("upload_seconds"),
+                },
+                last_heartbeat = task.GetValueOrDefault("last_heartbeat"),
+                last_forward_progress_at = task.GetValueOrDefault("last_forward_progress_at"),
+                assigned_worker_id = task.GetValueOrDefault("assigned_worker_id"),
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching timeline for {VideoId}", videoId);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Phase 10: force-fail a specific video task.
+    /// </summary>
+    [HttpPost("videos/{videoId}/force-fail")]
+    public async Task<IActionResult> ForceFail(string videoId, [FromBody] ForceFailRequest? request)
+    {
+        var check = RequireAdmin();
+        if (check != null) return check;
+
+        try
+        {
+            var reason = request?.Reason ?? "admin force-fail";
+            var ok = await _db.UpdateWorkerTaskAsync(videoId, "admin", "failed",
+                errorMessage: reason);
+            if (ok)
+                return Ok(new { success = true, video_id = videoId, reason });
+            return NotFound(new { error = "Video not found or already in terminal state" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error force-failing {VideoId}", videoId);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
     // ========== Test Notification ==========
 
     [HttpPost("test-notification")]
@@ -660,4 +832,9 @@ public class UpdateRecipientsRequest
 public class SingleRecipientRequest
 {
     public string? Email { get; set; }
+}
+
+public class ForceFailRequest
+{
+    public string? Reason { get; set; }
 }

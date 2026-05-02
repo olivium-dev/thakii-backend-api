@@ -31,12 +31,44 @@ CREATE TABLE video_tasks (
     cancellation_reason TEXT,
     cancellation_requested BOOLEAN DEFAULT FALSE,
     cancellation_requested_at TIMESTAMP,
-    progress_percent INTEGER DEFAULT 0
+    progress_percent INTEGER DEFAULT 0,
+    -- Worker liveness columns. Written by PickupTaskAsync / heartbeat
+    -- handler and read by StaleTaskReaperService.
+    assigned_worker_id VARCHAR(255),
+    assigned_worker VARCHAR(255),
+    processing_started_at TIMESTAMP,
+    last_heartbeat TIMESTAMP,
+    assignment_time TIMESTAMP,
+    processed_by_worker VARCHAR(255),
+    -- Reaper / retry bookkeeping.
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_failure_reason TEXT,
+    -- Phase 2: adaptive timeout. Populated at upload or batch import via
+    -- RemoteVideoDurationService; NULL means "use global default".
+    video_duration_seconds INTEGER,
+    -- Phase 3: fine-grained progress from worker subprocess.
+    progress_phase           VARCHAR(32),
+    progress_detail          JSONB,
+    last_forward_progress_at TIMESTAMP,
+    -- Phase 8: per-stage timing columns.
+    download_seconds   INTEGER,
+    audio_seconds      INTEGER,
+    frames_seconds     INTEGER,
+    transcribe_seconds INTEGER,
+    pdf_seconds        INTEGER,
+    upload_seconds     INTEGER
 );
 
 CREATE INDEX idx_video_tasks_user_id ON video_tasks(user_id);
 CREATE INDEX idx_video_tasks_status ON video_tasks(status);
 CREATE INDEX idx_video_tasks_created_at ON video_tasks(created_at DESC);
+-- Partial indexes for the reaper sweep (Phase B4).
+CREATE INDEX idx_video_tasks_processing_heartbeat
+    ON video_tasks(last_heartbeat) WHERE status = 'processing';
+CREATE INDEX idx_video_tasks_processing_start
+    ON video_tasks(processing_start) WHERE status = 'processing';
+CREATE INDEX idx_video_tasks_assigned_worker
+    ON video_tasks(assigned_worker_id) WHERE status = 'processing';
 
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
@@ -127,11 +159,20 @@ CREATE TABLE batch_import_jobs (
     total_size BIGINT DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     completed_at TIMESTAMP,
-    error_message TEXT
+    error_message TEXT,
+    -- updated_at is required because the BEFORE-UPDATE trigger below assigns it.
+    -- Omitting this column would cause every UPDATE on batch_import_jobs to fail
+    -- with PostgreSQL error 42703: record "new" has no field "updated_at",
+    -- which silently breaks BatchImportService.ProcessBatchJobAsync.
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX idx_batch_import_jobs_user_id ON batch_import_jobs(user_id);
 CREATE INDEX idx_batch_import_jobs_status ON batch_import_jobs(status);
+
+CREATE TRIGGER update_batch_import_jobs_updated_at
+    BEFORE UPDATE ON batch_import_jobs
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TABLE batch_import_videos (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -147,3 +188,7 @@ CREATE TABLE batch_import_videos (
 );
 
 CREATE INDEX idx_batch_import_videos_job_id ON batch_import_videos(job_id);
+
+CREATE TRIGGER update_batch_import_videos_updated_at
+    BEFORE UPDATE ON batch_import_videos
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

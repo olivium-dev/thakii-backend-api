@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json.Serialization;
 using ThakiiBackend.Api.Services;
 
 namespace ThakiiBackend.Api.Controllers;
@@ -97,6 +98,33 @@ public class InternalController : ControllerBase
     }
 
     /// <summary>
+    /// Phase 3: worker reports fine-grained progress (phase + detail JSON)
+    /// without changing the task status.
+    /// </summary>
+    [HttpPost("worker/progress")]
+    public async Task<IActionResult> ReportProgress([FromBody] ProgressUpdateRequest? request)
+    {
+        if (!IsWorkerApiEnabled)
+            return StatusCode(403, new { error = "Worker API is not enabled" });
+
+        if (request == null || string.IsNullOrEmpty(request.VideoId) ||
+            string.IsNullOrEmpty(request.Phase))
+            return BadRequest(new { error = "video_id and phase are required" });
+
+        try
+        {
+            var ok = await _db.RecordTaskProgressAsync(
+                request.VideoId, request.Phase, request.ProgressDetail);
+            return Ok(new { success = ok });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error recording progress for {VideoId}", request.VideoId);
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Worker API endpoint to atomically pick up a single task.
     /// </summary>
     [HttpPost("worker/pickup-task")]
@@ -149,7 +177,8 @@ public class InternalController : ControllerBase
 
             var success = await _db.UpdateWorkerTaskAsync(
                 request.VideoId, request.WorkerId, request.Status,
-                request.Progress, request.PdfUrl, request.ErrorMessage);
+                request.Progress, request.PdfUrl, request.ErrorMessage,
+                request.StageDurations);
 
             if (success && request.Status == "failed")
             {
@@ -177,10 +206,12 @@ public class InternalController : ControllerBase
     }
 
     /// <summary>
-    /// Worker API endpoint to send heartbeat.
+    /// Worker API endpoint to send heartbeat. Persists last_heartbeat to
+    /// PostgreSQL for the rows currently attributed to this worker so the
+    /// StaleTaskReaperService has a real liveness signal.
     /// </summary>
     [HttpPost("worker/heartbeat")]
-    public IActionResult Heartbeat([FromBody] HeartbeatRequest? request)
+    public async Task<IActionResult> Heartbeat([FromBody] HeartbeatRequest? request)
     {
         if (!IsWorkerApiEnabled)
             return StatusCode(403, new { error = "Worker API is not enabled" });
@@ -190,12 +221,44 @@ public class InternalController : ControllerBase
 
         try
         {
-            _db.RecordWorkerHeartbeat(request.WorkerId, request.ActiveTaskIds);
-            return Ok(new { success = true });
+            // Worker DTOs in the wild send either active_task_ids or active_tasks;
+            // tolerate both during the rollout.
+            var activeIds = request.EffectiveActiveTaskIds;
+            _db.RecordWorkerHeartbeat(request.WorkerId, activeIds);
+            var rowsTouched = await _db.PersistWorkerHeartbeatAsync(request.WorkerId, activeIds);
+            return Ok(new { success = true, rows_touched = rowsTouched });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error in worker_heartbeat");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Phase 7: peek the next task candidate without committing.  The
+    /// worker uses this to prefetch the download while transcribing the
+    /// current task.  Read-only — no row update.
+    /// </summary>
+    [HttpPost("worker/peek-next")]
+    public async Task<IActionResult> PeekNext([FromBody] PickupTaskRequest? request)
+    {
+        if (!IsWorkerApiEnabled)
+            return StatusCode(403, new { error = "Worker API is not enabled" });
+
+        if (request == null || string.IsNullOrEmpty(request.WorkerId))
+            return BadRequest(new { error = "worker_id is required" });
+
+        try
+        {
+            var task = await _db.PeekNextTaskAsync();
+            if (task != null)
+                return Ok(new { success = true, task });
+            return NoContent();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in peek-next");
             return StatusCode(500, new { error = ex.Message });
         }
     }
@@ -326,10 +389,40 @@ public class UpdateWorkerTaskRequest
     public int? Progress { get; set; }
     public string? PdfUrl { get; set; }
     public string? ErrorMessage { get; set; }
+
+    [JsonPropertyName("stage_durations")]
+    public Dictionary<string, int>? StageDurations { get; set; }
+}
+
+public class ProgressUpdateRequest
+{
+    [JsonPropertyName("video_id")]
+    public string? VideoId { get; set; }
+
+    [JsonPropertyName("worker_id")]
+    public string? WorkerId { get; set; }
+
+    [JsonPropertyName("phase")]
+    public string? Phase { get; set; }
+
+    [JsonPropertyName("progress_detail")]
+    public string? ProgressDetail { get; set; }
 }
 
 public class HeartbeatRequest
 {
     public string? WorkerId { get; set; }
+
+    // Canonical field name; new workers send this.
+    [JsonPropertyName("active_task_ids")]
     public List<string>? ActiveTaskIds { get; set; }
+
+    // Legacy alias used by older worker builds. Kept during the rollout
+    // window so a partial deploy doesn't black out heartbeats.
+    [JsonPropertyName("active_tasks")]
+    public List<string>? ActiveTasksLegacy { get; set; }
+
+    [JsonIgnore]
+    public List<string>? EffectiveActiveTaskIds =>
+        (ActiveTaskIds is { Count: > 0 } a) ? a : ActiveTasksLegacy;
 }

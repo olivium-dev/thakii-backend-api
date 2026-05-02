@@ -235,6 +235,82 @@ public class AuthController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Issue a backend token without going through Firebase, for super-admin emails only.
+    ///
+    /// Intended for end-to-end testing, scripted maintenance, and debugging by people
+    /// listed in <c>SuperAdmins</c>. Validates two things:
+    ///   1. The supplied email is in the <c>SuperAdmins</c> config array.
+    ///   2. The supplied password matches <c>SuperLogin:Password</c> from configuration
+    ///      (override via <c>SUPER_LOGIN_PASSWORD</c> env var).
+    /// On success, returns a backend custom token equivalent to a /auth/login response.
+    /// </summary>
+    [HttpPost("super-login")]
+    public IActionResult SuperLogin([FromBody] SuperLoginRequest? request)
+    {
+        if (request == null || string.IsNullOrEmpty(request.Email) || string.IsNullOrEmpty(request.Password))
+            return BadRequest(new { error = "email and password are required" });
+
+        var email = request.Email.Trim().ToLowerInvariant();
+
+        var superAdmins = _config.GetSection("SuperAdmins").Get<string[]>() ?? Array.Empty<string>();
+        var superAdminsLower = superAdmins.Select(a => a.Trim().ToLowerInvariant()).ToArray();
+        if (!superAdminsLower.Contains(email))
+        {
+            _logger.LogWarning("super-login denied: {Email} is not in SuperAdmins list", email);
+            return Unauthorized(new { error = "Email is not registered as a super admin" });
+        }
+
+        var expected = Environment.GetEnvironmentVariable("SUPER_LOGIN_PASSWORD")
+                       ?? _config["SuperLogin:Password"]
+                       ?? "123768";
+
+        if (request.Password != expected)
+        {
+            _logger.LogWarning("super-login denied: bad password for {Email}", email);
+            return Unauthorized(new { error = "Invalid password" });
+        }
+
+        // Synthetic uid prefix that's stable per email so subsequent calls don't generate
+        // a new wallet holder each time. We avoid colliding with real Firebase uids.
+        var uid = $"super-admin-{email.Split('@')[0]}";
+        var name = email.Split('@')[0];
+
+        var userData = new Dictionary<string, object?>
+        {
+            ["uid"] = uid,
+            ["user_id"] = uid,
+            ["email"] = email,
+            ["name"] = name,
+            ["picture"] = "",
+            ["email_verified"] = true
+        };
+
+        var backendToken = _tokenService.GenerateCustomToken(userData);
+        var holderId = UidToHolderId(uid);
+
+        _logger.LogInformation("super-login granted for {Email}, uid={Uid}", email, uid);
+
+        return Ok(new
+        {
+            success = true,
+            backend_token = backendToken,
+            expires_in_hours = 72,
+            user = new
+            {
+                uid,
+                holder_id = holderId.ToString(),
+                email,
+                name,
+                picture = "",
+                email_verified = true,
+                is_admin = true
+            },
+            token_type = "custom_backend",
+            message = "Super-login successful. Use backend_token in Authorization: Bearer header."
+        });
+    }
+
     [HttpGet("user")]
     public IActionResult GetUser()
     {
@@ -439,4 +515,10 @@ public class AuthController : ControllerBase
             _logger.LogError(e, "Unexpected error while ensuring wallet for user {UserId} with holderId {HolderId}", userId, holderId);
         }
     }
+}
+
+public class SuperLoginRequest
+{
+    public string? Email { get; set; }
+    public string? Password { get; set; }
 }

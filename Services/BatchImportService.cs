@@ -9,6 +9,16 @@ public interface IBatchImportService
     Task<List<Dictionary<string, object?>>> ListUserBatchJobsAsync(string userId, int limit = 20);
 }
 
+/// <summary>
+/// Raised when a Nextcloud/WebDAV share URL cannot be reached or returns a non-success
+/// HTTP status. Distinct from "share is reachable but contains no videos".
+/// </summary>
+public class ShareAccessException : Exception
+{
+    public ShareAccessException(string message) : base(message) { }
+    public ShareAccessException(string message, Exception inner) : base(message, inner) { }
+}
+
 public class BatchImportService : IBatchImportService
 {
     private readonly string _connectionString;
@@ -45,22 +55,52 @@ public class BatchImportService : IBatchImportService
     {
         var jobId = Guid.NewGuid().ToString();
 
+        // Step 1: list videos from share URL. Distinguish "share unreachable" from "share has no videos".
+        List<(string Name, long Size)> videos;
         try
         {
-            // List videos from share URL (Nextcloud WebDAV)
-            var videos = await ListVideosFromShareUrl(shareUrl);
-            if (videos.Count == 0)
+            videos = await ListVideosFromShareUrl(shareUrl);
+        }
+        catch (ShareAccessException ex)
+        {
+            _logger.LogWarning(ex, "Share access failed for {ShareUrl}", shareUrl);
+            return new Dictionary<string, object?>
             {
-                _logger.LogWarning("No videos found at share URL: {ShareUrl}", shareUrl);
-                return null;
-            }
+                ["_error"] = true,
+                ["_reason"] = "share_access_failed",
+                ["_detail"] = ex.Message
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected error while listing videos from share URL {ShareUrl}", shareUrl);
+            return new Dictionary<string, object?>
+            {
+                ["_error"] = true,
+                ["_reason"] = "share_listing_unexpected_error",
+                ["_detail"] = ex.Message
+            };
+        }
 
-            long totalSize = videos.Sum(v => v.Size);
+        if (videos.Count == 0)
+        {
+            _logger.LogWarning("Share URL is reachable but contains no supported video files: {ShareUrl}", shareUrl);
+            return new Dictionary<string, object?>
+            {
+                ["_error"] = true,
+                ["_reason"] = "no_videos_in_share"
+            };
+        }
 
+        long totalSize = videos.Sum(v => v.Size);
+
+        // Step 2: persist job + video rows. DB failures here surface as "db_error" so the
+        // caller never confuses a database outage with an empty/inaccessible share.
+        try
+        {
             await using var conn = new NpgsqlConnection(_connectionString);
             await conn.OpenAsync();
 
-            // Create batch job
             await using (var cmd = new NpgsqlCommand(@"
                 INSERT INTO batch_import_jobs (job_id, user_id, user_email, share_url, status, total_videos, total_size)
                 VALUES (@jobId, @userId, @userEmail, @shareUrl, 'pending', @totalVideos, @totalSize)
@@ -75,7 +115,6 @@ public class BatchImportService : IBatchImportService
                 await cmd.ExecuteNonQueryAsync();
             }
 
-            // Create batch import video records
             foreach (var video in videos)
             {
                 await using var vidCmd = new NpgsqlCommand(@"
@@ -88,7 +127,6 @@ public class BatchImportService : IBatchImportService
                 await vidCmd.ExecuteNonQueryAsync();
             }
 
-            // Start background processing
             _ = Task.Run(() => ProcessBatchJobAsync(jobId, userId, userEmail, shareUrl, videos));
 
             return new Dictionary<string, object?>
@@ -98,10 +136,25 @@ public class BatchImportService : IBatchImportService
                 ["total_size"] = totalSize
             };
         }
+        catch (NpgsqlException ex)
+        {
+            _logger.LogError(ex, "Database error while persisting batch import job for user {UserId}", userId);
+            return new Dictionary<string, object?>
+            {
+                ["_error"] = true,
+                ["_reason"] = "db_error",
+                ["_detail"] = ex.Message
+            };
+        }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to create batch import job for user {UserId}", userId);
-            return null;
+            _logger.LogError(ex, "Unexpected error while persisting batch import job for user {UserId}", userId);
+            return new Dictionary<string, object?>
+            {
+                ["_error"] = true,
+                ["_reason"] = "persistence_unexpected_error",
+                ["_detail"] = ex.Message
+            };
         }
     }
 
@@ -219,48 +272,52 @@ public class BatchImportService : IBatchImportService
         var videos = new List<(string Name, long Size)>();
         var validExtensions = new[] { ".mp4", ".avi", ".mov", ".wmv", ".mkv", ".ts", ".m4v", ".flv", ".webm" };
 
+        var shareToken = ExtractShareToken(shareUrl);
+        if (string.IsNullOrEmpty(shareToken))
+            throw new ShareAccessException("Could not extract share token from URL. Expected a Nextcloud share URL like https://host/s/<token>.");
+
+        var webdavUrl = ConvertToWebDavUrl(shareUrl);
+
+        using var client = _httpClientFactory.CreateClient();
+        client.Timeout = TimeSpan.FromSeconds(60);
+
+        var request = new HttpRequestMessage(new HttpMethod("PROPFIND"), webdavUrl);
+        request.Headers.Add("Depth", "1");
+
+        var authBytes = System.Text.Encoding.ASCII.GetBytes($"{shareToken}:");
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+            "Basic", Convert.ToBase64String(authBytes));
+
+        request.Content = new StringContent(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:getcontentlength/><d:displayname/><d:getcontenttype/></d:prop></d:propfind>",
+            System.Text.Encoding.UTF8, "application/xml");
+
+        _logger.LogInformation("Listing videos from WebDAV: {Url} with token: {Token}", webdavUrl, shareToken);
+
+        HttpResponseMessage response;
         try
         {
-            // Extract share token for authentication
-            var shareToken = ExtractShareToken(shareUrl);
-            if (string.IsNullOrEmpty(shareToken))
-            {
-                _logger.LogWarning("Could not extract share token from URL: {ShareUrl}", shareUrl);
-                return videos;
-            }
+            response = await client.SendAsync(request);
+        }
+        catch (Exception ex)
+        {
+            throw new ShareAccessException($"Network error while contacting share host: {ex.Message}", ex);
+        }
 
-            // Convert share URL to WebDAV PROPFIND URL
-            var webdavUrl = ConvertToWebDavUrl(shareUrl);
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = await response.Content.ReadAsStringAsync();
+            var snippet = errorBody.Length > 500 ? errorBody[..500] : errorBody;
+            _logger.LogWarning("WebDAV PROPFIND failed with status {StatusCode} for {Url}. Response: {Response}",
+                response.StatusCode, webdavUrl, snippet);
+            throw new ShareAccessException(
+                $"Share URL returned HTTP {(int)response.StatusCode} {response.ReasonPhrase}. The share may be expired, password-protected, or the URL is wrong.");
+        }
 
-            using var client = _httpClientFactory.CreateClient();
-            client.Timeout = TimeSpan.FromSeconds(60);
-
-            var request = new HttpRequestMessage(new HttpMethod("PROPFIND"), webdavUrl);
-            request.Headers.Add("Depth", "1");
-            
-            // Add Basic Authentication with share token as username and empty password
-            var authBytes = System.Text.Encoding.ASCII.GetBytes($"{shareToken}:");
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
-                "Basic", Convert.ToBase64String(authBytes));
-            
-            request.Content = new StringContent(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:getcontentlength/><d:displayname/><d:getcontenttype/></d:prop></d:propfind>",
-                System.Text.Encoding.UTF8, "application/xml");
-
-            _logger.LogInformation("Listing videos from WebDAV: {Url} with token: {Token}", webdavUrl, shareToken);
-
-            var response = await client.SendAsync(request);
-            if (!response.IsSuccessStatusCode)
-            {
-                var errorBody = await response.Content.ReadAsStringAsync();
-                _logger.LogWarning("WebDAV PROPFIND failed with status {StatusCode} for {Url}. Response: {Response}", 
-                    response.StatusCode, webdavUrl, errorBody.Length > 500 ? errorBody[..500] : errorBody);
-                return videos;
-            }
-
-            var xml = await response.Content.ReadAsStringAsync();
-
-            // Simple XML parsing for filenames and sizes
+        string xml;
+        try
+        {
+            xml = await response.Content.ReadAsStringAsync();
             var doc = new System.Xml.XmlDocument();
             doc.LoadXml(xml);
             var nsManager = new System.Xml.XmlNamespaceManager(doc.NameTable);
@@ -285,14 +342,13 @@ public class BatchImportService : IBatchImportService
                     }
                 }
             }
-            
-            _logger.LogInformation("Found {Count} video files in share", videos.Count);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to list videos from share URL: {ShareUrl}", shareUrl);
+            throw new ShareAccessException($"Could not parse WebDAV response from share host: {ex.Message}", ex);
         }
 
+        _logger.LogInformation("Found {Count} video files in share", videos.Count);
         return videos;
     }
 
